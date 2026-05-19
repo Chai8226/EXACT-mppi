@@ -4,13 +4,14 @@ import shutil
 import yaml
 import numpy as np
 import time
-
+import os
 import irsim
 from irsim.config.path_param import path_manager
 from exact_mppi.mppi_jax.controller import MPPIController
 from exact_mppi.path.path_search import PathSearch
 from exact_mppi.utils import env_config_to_grid
 
+os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 
 def _report_jax_device() -> None:
     import jax

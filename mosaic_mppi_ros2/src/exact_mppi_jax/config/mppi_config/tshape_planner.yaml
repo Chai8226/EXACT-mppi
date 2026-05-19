@@ -98,10 +98,7 @@ MPPI:
       [[0.900, 0.300], [-0.900, 0.300], [-0.900, -0.300], [0.900, -0.300]],
       [[-0.600, 1.200], [-0.900, 1.200], [-0.900, -1.200], [-0.600, -1.200]]
     ]
-  mosaic_unit_vertices: [[-1., 1.], [1., 1.], [1., -1.], [-1., -1.]]
-  wheelbase: 1.52
-  min_turning_r: 2.6
-
+    
 # Reference path tracking
 reference_path:
   enabled: True              # Enable reference path tracking cost

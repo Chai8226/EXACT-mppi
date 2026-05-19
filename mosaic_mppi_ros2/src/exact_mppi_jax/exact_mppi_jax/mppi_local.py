@@ -121,13 +121,13 @@ class MPPILocalNode(Node):
             "base_frame": "base_link",
             "enable_visualization": True,
             "enable_robot_marker": True,
-            "enable_mosaic_marker": True,
+            "enable_mppi_marker": True,
             "enable_rollout_markers": False,
             "enable_optimal_path_markers": False,
             "marker_size": 0.15,
             "marker_z": 0.01,
             "robot_marker_topic": "/robot_marker",
-            "mosaic_markers_topic": "/mosaic_markers",
+            "mppi_markers_topic": "/mppi_markers",
             "rollout_markers_topic": "/rollout_markers",
             "optimal_path_markers_topic": "/mppi_plan",
             "path_follow_marker_topic": "/mppi_path_follow_marker",
@@ -322,14 +322,14 @@ class MPPILocalNode(Node):
             "enable_visualization": bool(self.ros2_cfg.get("enable_visualization", True)),
             "enable_dune_markers": False,
             "enable_robot_marker": bool(self.ros2_cfg.get("enable_robot_marker", False)),
-            "enable_mosaic_marker": bool(self.ros2_cfg.get("enable_mosaic_marker", True)),
+            "enable_mppi_marker": bool(self.ros2_cfg.get("enable_mppi_marker", True)),
             "enable_rollout_markers": bool(self.ros2_cfg.get("enable_rollout_markers", False)),
             "map_frame": self.map_frame,
             "marker_size": float(self.ros2_cfg.get("marker_size", 0.15)),
             "marker_z": float(self.ros2_cfg.get("marker_z", 0.01)),
             "dune_markers_topic": "/dune_point_markers",
             "robot_marker_topic": str(self.ros2_cfg.get("robot_marker_topic", "/robot_marker")),
-            "mosaic_markers_topic": str(self.ros2_cfg.get("mosaic_markers_topic", "/mosaic_markers")),
+            "mppi_markers_topic": str(self.ros2_cfg.get("mppi_markers_topic", "/mppi_markers")),
             "rollout_markers_topic": str(self.ros2_cfg.get("rollout_markers_topic", "/rollout_markers")),
             "rollout_downsample": int(self.ros2_cfg.get("rollout_downsample", 10)),
             "state_lock": self._state_lock,
@@ -360,13 +360,13 @@ class MPPILocalNode(Node):
         wheelbase = float(mppi_cfg.get("wheelbase", 1.6))
 
         vertices_list = mppi_cfg.get("vertices", None)
-        mosaic_unit_vertices = mppi_cfg.get("mosaic_unit_vertices", [])
-        if not vertices_list and mosaic_unit_vertices:
-            vertices_list = [mosaic_unit_vertices]
+        mppi_unit_vertices = mppi_cfg.get("mppi_unit_vertices", [])
+        if not vertices_list and mppi_unit_vertices:
+            vertices_list = [mppi_unit_vertices]
 
         if not vertices_list:
             vertices_list = [[[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]]]
-            mosaic_unit_vertices = vertices_list[0]
+            mppi_unit_vertices = vertices_list[0]
 
         max_speed = [
             float(mppi_cfg.get("vx_max", 2.0)),
@@ -1079,6 +1079,9 @@ class MPPILocalNode(Node):
 
 
 def main(args=None) -> None:
+    # do not preallocate GPU memory in JAX to allow sharing with other processes (e.g. RViz)
+    os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+
     rclpy.init(args=args)
 
     node = None

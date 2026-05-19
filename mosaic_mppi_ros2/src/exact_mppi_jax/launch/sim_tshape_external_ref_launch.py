@@ -43,7 +43,7 @@ def generate_launch_description() -> LaunchDescription:
     )
     cost_viz_arg = DeclareLaunchArgument(
         "cost_viz",
-        default_value="true",
+        default_value="false",
         description="Launch cost breakdown histogram visualization",
     )
 

@@ -29,7 +29,6 @@ dependencies = [
 irsim = ['ir-sim>=2.4.0']
 all = ['ir-sim>=2.4.0']
 
-[tool.setuptools]
-py-modules = ['exact_mppi']
-
+[tool.setuptools.packages.find]
+include = ["exact_mppi*"]
 

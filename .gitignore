@@ -14,7 +14,7 @@
 .venv/
 venv/
 .exact_mppi/
-env/
+/env/
 .env
 .python-version
 .vscode/

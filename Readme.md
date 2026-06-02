@@ -316,4 +316,4 @@ If you find this work useful, please cite:
 }
 ```
 
-For any technical issues or commercial inquiries, please contact [Chen Peng](mailto:penchen@ucdavis.edu) or [Peng Wei](mailto:penwei@ucdavis.edu): penchen@ucdavis.edu, penwei@ucdavis.edu.
+For any technical issues or commercial inquiries, please contact [Chen Peng](mailto:chen.peng@zju.edu.cn) or [Peng Wei](mailto:penwei@ucdavis.edu).

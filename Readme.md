@@ -12,6 +12,10 @@
 </p>
 
 <p align="center">
+  <a href="https://agroboticsresearch.github.io/exact-mppi/">Project Website</a>
+</p>
+
+<p align="center">
   <img src="videos/figure1_system_architecture.png" width="90%" alt="EXACT-MPPI system architecture" />
 </p>
 
@@ -301,13 +305,15 @@ ros2 launch exact_mppi_jax sim_limo_corridor_launch.py auto_goal:=true
 If you find this work useful, please cite:
 
 ```bibtex
-@article{exactmppi2025,
-  title   = {EXACT-MPPI: Exact Signed-Distance Navigation for Arbitrary-Footprint Robots
-             from Point Clouds via Path Integral Control},
-  author  = {},
-  journal = {},
-  year    = {2025},
-  keywords = {Robot Navigation, Model Predictive Path Integral Control,
-              Signed-Distance Collision Avoidance, Arbitrary Footprint}
+@misc{peng2026exactmppiexactsigneddistancenavigation,
+      title={EXACT-MPPI: Exact Signed-Distance Navigation for Arbitrary-Footprint Robots from Point Clouds via Path Integral Control},
+      author={Chen Peng and Zhikang Ge and Wenwu Lu and Haiming Gao and Stavros Vougioukas and Peng Wei},
+      year={2026},
+      eprint={2605.29663},
+      archivePrefix={arXiv},
+      primaryClass={cs.RO},
+      url={https://arxiv.org/abs/2605.29663},
 }
 ```
+
+For any technical issues or commercial inquiries, please contact [Chen Peng](mailto:penchen@ucdavis.edu) or [Peng Wei](mailto:penwei@ucdavis.edu): penchen@ucdavis.edu, penwei@ucdavis.edu.

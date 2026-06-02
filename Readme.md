@@ -1,7 +1,7 @@
 <h1 align="center">EXACT-MPPI</h1>
 
 <p align="center">
-  <strong>Exact Non-Convex Shape-Aware MPPI for Agile Robot Navigation</strong>
+  <strong>EXACT-MPPI: Exact Signed-Distance Navigation for Arbitrary-Footprint Robots from Point Clouds via Path Integral Control</strong>
 </p>
 
 <p align="center">

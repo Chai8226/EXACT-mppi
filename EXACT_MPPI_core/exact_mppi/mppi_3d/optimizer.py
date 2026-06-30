@@ -14,6 +14,14 @@ from .models import (
 )
 from .motion_models import YawOnly3DHolonomicMotionModel
 from .geometry import BoxUnionVolume3D
+from .control_preference_critics import (
+    prefer_forward_critic_initialize_3d,
+    prefer_forward_critic_score_3d,
+    twirling_critic_initialize_3d,
+    twirling_critic_score_3d,
+    velocity_deadband_critic_initialize_3d,
+    velocity_deadband_critic_score_3d,
+)
 from .goal_path_critics import (
     constraint_critic_initialize_3d,
     constraint_critic_score_3d,
@@ -126,6 +134,27 @@ class Optimizer3D:
                 kwargs,
                 "PathFollowCritic",
                 default_weight=path_weight,
+            )
+        )
+        self.prefer_forward_params_ = prefer_forward_critic_initialize_3d(
+            self._critic_params(
+                kwargs,
+                "PreferForwardCritic",
+                default_weight=5.0,
+            )
+        )
+        self.velocity_deadband_params_ = velocity_deadband_critic_initialize_3d(
+            self._critic_params(
+                kwargs,
+                "VelocityDeadbandCritic",
+                default_weight=35.0,
+            )
+        )
+        self.twirling_params_ = twirling_critic_initialize_3d(
+            self._critic_params(
+                kwargs,
+                "TwirlingCritic",
+                default_weight=10.0,
             )
         )
         self.obstacles_params_ = ObstaclesCriticParams3D(
@@ -341,6 +370,8 @@ class Optimizer3D:
         obstacle_points: jax.Array,
         obstacle_points_mask: jax.Array,
     ) -> Tuple[jax.Array, jax.Array]:
+        local_plan = plan[: self.settings_.time_steps]
+        local_path_length = self._local_path_length(local_plan)
         constraint_cost, _ = constraint_critic_score_3d(
             vx,
             vy,
@@ -363,14 +394,33 @@ class Optimizer3D:
         )
         path_align_cost, _ = path_align_critic_score_3d(
             trajectories,
-            plan[: self.settings_.time_steps],
+            local_plan,
             self.path_align_params_,
         )
         path_follow_cost, _ = path_follow_critic_score_3d(
             trajectories,
             pose,
-            plan[: self.settings_.time_steps],
+            local_plan,
             self.path_follow_params_,
+        )
+        prefer_forward_cost, _ = prefer_forward_critic_score_3d(
+            vx,
+            local_path_length,
+            self.prefer_forward_params_,
+            self.settings_.model_dt,
+        )
+        velocity_deadband_cost, _ = velocity_deadband_critic_score_3d(
+            vx,
+            vy,
+            vz,
+            wz,
+            self.velocity_deadband_params_,
+            self.settings_.model_dt,
+        )
+        twirling_cost, _ = twirling_critic_score_3d(
+            wz,
+            local_path_length,
+            self.twirling_params_,
         )
         obstacle_cost, obstacle_clearances, _ = obstacles_critic_score_3d(
             trajectories,
@@ -386,6 +436,9 @@ class Optimizer3D:
             + goal_yaw_cost
             + path_align_cost
             + path_follow_cost
+            + prefer_forward_cost
+            + velocity_deadband_cost
+            + twirling_cost
             + obstacle_cost
         )
         return total_cost, obstacle_clearances
@@ -482,6 +535,13 @@ class Optimizer3D:
     @staticmethod
     def _shortest_angle(angle: jax.Array) -> jax.Array:
         return jnp.arctan2(jnp.sin(angle), jnp.cos(angle))
+
+    @staticmethod
+    def _local_path_length(plan: jax.Array) -> jax.Array:
+        if plan.shape[0] < 2:
+            return jnp.array(0.0, dtype=jnp.float32)
+        deltas = jnp.diff(plan[:, :3], axis=0)
+        return jnp.sum(jnp.linalg.norm(deltas, axis=1))
 
     @staticmethod
     def _validate_inputs(

@@ -14,6 +14,10 @@ Status: ready-for-agent
 - 2026-06-30: Issue 05 is implemented and has passing focused/3D Core tests:
   `python3 -m pytest EXACT_MPPI_core/tests/test_mppi_3d_control_preference_critics.py`
   and `python3 -m pytest EXACT_MPPI_core/tests/test_mppi_3d_minimal_loop.py EXACT_MPPI_core/tests/test_mppi_3d_box_union_sdf.py EXACT_MPPI_core/tests/test_mppi_3d_obstacles.py EXACT_MPPI_core/tests/test_mppi_3d_goal_path_constraint_critics.py EXACT_MPPI_core/tests/test_mppi_3d_control_preference_critics.py`.
+- 2026-06-30: Issue 06 is implemented and has passing example/focused/full Core tests:
+  `PYTHONPATH=EXACT_MPPI_core python3 EXACT_MPPI_core/example/yaw_only_3d_obstacle_avoidance/mppi_3d_obstacle_avoidance.py`,
+  `python3 -m pytest EXACT_MPPI_core/tests/test_mppi_3d_obstacle_avoidance_example.py`,
+  and `python3 -m pytest EXACT_MPPI_core/tests`.
 
 ## Problem Statement
 

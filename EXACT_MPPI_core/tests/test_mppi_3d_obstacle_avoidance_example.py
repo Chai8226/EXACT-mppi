@@ -1,0 +1,54 @@
+import importlib.util
+from pathlib import Path
+
+import numpy as np
+
+
+def _load_example_module():
+    example_path = (
+        Path(__file__).resolve().parents[1]
+        / "example"
+        / "yaw_only_3d_obstacle_avoidance"
+        / "mppi_3d_obstacle_avoidance.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "mppi_3d_obstacle_avoidance",
+        example_path,
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_core_only_3d_obstacle_avoidance_example_reaches_goal_headlessly():
+    example = _load_example_module()
+
+    result = example.run_3d_obstacle_avoidance_example(max_steps=80)
+
+    assert result.reached_goal
+    assert not result.collided
+    assert result.min_sdf_clearance >= 0.04
+    assert result.global_obstacle_points.shape[1] == 3
+    assert result.global_reference_path.shape[1] == 4
+    assert result.command_history.shape[1] == 4
+    assert (
+        np.linalg.norm(result.final_state[:3] - result.global_reference_path[-1, :3])
+        <= 0.28
+    )
+
+
+def test_3d_example_builds_range_based_local_observation_with_mask():
+    example = _load_example_module()
+    obstacle_points = example.build_global_obstacle_points()
+
+    local_points, mask = example.build_range_based_local_observation(
+        obstacle_points,
+        robot_pose=np.array([2.4, 0.0, 0.3, 0.0], dtype=np.float32),
+        observation_range=0.45,
+        max_points=24,
+    )
+
+    assert local_points.shape == (24, 3)
+    assert mask.shape == (24,)
+    assert 0 < int(mask.sum()) <= 24
+    assert np.all(np.isfinite(local_points))

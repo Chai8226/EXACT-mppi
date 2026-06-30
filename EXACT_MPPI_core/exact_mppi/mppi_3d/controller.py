@@ -61,6 +61,24 @@ class MPPIController3D:
             return None
         return jax.device_get(costs)
 
+    def getObstacleClearances(self) -> Optional[np.ndarray]:
+        clearances = self.optimizer_.getObstacleClearances()
+        if clearances is None:
+            return None
+        return jax.device_get(clearances)
+
+    def getLastMinimumClearance(self) -> Optional[float]:
+        clearance = self.optimizer_.getLastMinimumClearance()
+        if clearance is None:
+            return None
+        return float(jax.device_get(clearance))
+
+    def getLastTrajectoryValidationResult(self) -> Optional[int]:
+        result = self.optimizer_.getLastTrajectoryValidationResult()
+        if result is None:
+            return None
+        return int(jax.device_get(result))
+
     @staticmethod
     def _pack_obstacle_points(
         obstacle_points: Optional[np.ndarray],

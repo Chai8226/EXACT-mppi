@@ -13,6 +13,12 @@ from .models import (
     reset_ControlSequence3D,
 )
 from .motion_models import YawOnly3DHolonomicMotionModel
+from .geometry import BoxUnionVolume3D
+from .obstacles_critic import (
+    ObstaclesCriticParams3D,
+    obstacles_critic_score_3d,
+)
+from .optimal_trajectory_validator import OptimalTrajectoryValidator3D
 
 
 class Optimizer3D:
@@ -43,8 +49,12 @@ class Optimizer3D:
         control_weight: float = 0.02,
         **kwargs,
     ):
-        del kwargs
         self.debug_ = debug
+        robot_volume_config = kwargs.get(
+            "robot_volume_config",
+            [{"center": [0.0, 0.0, 0.0], "size": [0.4, 0.4, 0.4]}],
+        )
+        self.robot_volume_ = BoxUnionVolume3D.from_config(robot_volume_config)
         self.settings_ = OptimizerSettings3D(
             constraints=ControlConstraints3D(
                 vx_max=abs(vx_max),
@@ -70,6 +80,57 @@ class Optimizer3D:
             path_weight=float(path_weight),
             control_weight=float(control_weight),
         )
+        obstacles_params = kwargs.get("ObstaclesCritic", {})
+        self.obstacles_params_ = ObstaclesCriticParams3D(
+            enabled=bool(
+                kwargs.get("obstacles_enabled", obstacles_params.get("enabled", True))
+            ),
+            power=int(
+                kwargs.get(
+                    "obstacles_cost_power",
+                    obstacles_params.get("cost_power", obstacles_params.get("power", 1)),
+                )
+            ),
+            repulsion_weight=float(
+                kwargs.get(
+                    "obstacles_repulsion_weight",
+                    obstacles_params.get("repulsion_weight", 1.5),
+                )
+            ),
+            critical_weight=float(
+                kwargs.get(
+                    "obstacles_critical_weight",
+                    obstacles_params.get("critical_weight", 20.0),
+                )
+            ),
+            collision_cost=float(
+                kwargs.get(
+                    "obstacles_collision_cost",
+                    obstacles_params.get("collision_cost", 100000.0),
+                )
+            ),
+            collision_margin_distance=float(
+                kwargs.get(
+                    "obstacles_collision_margin_distance",
+                    obstacles_params.get("collision_margin_distance", 0.1),
+                )
+            ),
+            repulsion_distance=float(
+                kwargs.get(
+                    "obstacles_repulsion_distance",
+                    obstacles_params.get("repulsion_distance", 5.0),
+                )
+            ),
+        )
+        trajectory_validator_params = kwargs.get("TrajectoryValidator", {})
+        self.trajectory_validator_ = OptimalTrajectoryValidator3D(
+            self.settings_,
+            trajectory_validator_params.get("collision_lookahead_time", 2.0),
+            trajectory_validator_params.get(
+                "collision_margin_distance",
+                self.obstacles_params_.collision_margin_distance,
+            ),
+        )
         self.motion_model_ = YawOnly3DHolonomicMotionModel(model_dt)
         self.reset(seed)
 
@@ -77,9 +138,12 @@ class Optimizer3D:
         self.control_sequence_ = reset_ControlSequence3D(self.settings_.time_steps)
         self.key_ = jax.random.PRNGKey(seed)
         self.last_command_vel_ = jnp.zeros(4, dtype=jnp.float32)
+        self.last_validation_result_ = None
+        self.last_minimum_clearance_ = None
         if self.debug_:
             self.generated_trajectories_ = None
             self.costs_ = None
+            self.obstacle_clearances_ = None
 
     def evalControl(
         self,
@@ -90,7 +154,7 @@ class Optimizer3D:
         obstacle_points: jax.Array,
         obstacle_points_mask: jax.Array,
     ) -> Tuple[jax.Array, jax.Array]:
-        del robot_speed, obstacle_points, obstacle_points_mask
+        del robot_speed
 
         self._validate_inputs(robot_pose, plan, goal, self.settings_.time_steps)
 
@@ -100,12 +164,15 @@ class Optimizer3D:
                 candidate_sequences,
                 trajectories,
                 costs,
+                obstacle_clearances,
             ) = self._generate_and_score(
                 self.key_,
                 self.control_sequence_,
                 robot_pose,
                 plan,
                 goal,
+                obstacle_points,
+                obstacle_points_mask,
             )
             self.control_sequence_ = self._update_control_sequence(
                 candidate_sequences,
@@ -116,16 +183,25 @@ class Optimizer3D:
             self.control_sequence_,
             robot_pose,
         )
+        validation_result, min_clearance = self.trajectory_validator_.validateTrajectory(
+            optimal_trajectory,
+            obstacle_points,
+            obstacle_points_mask,
+            self.robot_volume_,
+        )
         command = self.getControlFromSequence(self.control_sequence_)
 
         if self.settings_.shift_control_sequence:
             self.control_sequence_ = self.shiftControlSequence(self.control_sequence_)
 
         self.last_command_vel_ = command
+        self.last_validation_result_ = validation_result
+        self.last_minimum_clearance_ = min_clearance
 
         if self.debug_:
             self.generated_trajectories_ = trajectories
             self.costs_ = costs
+            self.obstacle_clearances_ = obstacle_clearances
 
         return command, optimal_trajectory
 
@@ -136,7 +212,9 @@ class Optimizer3D:
         pose: jax.Array,
         plan: jax.Array,
         goal: jax.Array,
-    ) -> Tuple[jax.Array, ControlSequence3D, Trajectories3D, jax.Array]:
+        obstacle_points: jax.Array,
+        obstacle_points_mask: jax.Array,
+    ) -> Tuple[jax.Array, ControlSequence3D, Trajectories3D, jax.Array, jax.Array]:
         settings = self.settings_
         key, k1, k2, k3, k4 = jax.random.split(key, 5)
 
@@ -158,8 +236,24 @@ class Optimizer3D:
 
         vx, vy, vz, wz = self._clip_controls(vx, vy, vz, wz)
         trajectories = self.motion_model_.integrate_batch(vx, vy, vz, wz, pose)
-        costs = self._score_trajectories(trajectories, vx, vy, vz, wz, plan, goal)
-        return key, ControlSequence3D(vx=vx, vy=vy, vz=vz, wz=wz), trajectories, costs
+        costs, obstacle_clearances = self._score_trajectories(
+            trajectories,
+            vx,
+            vy,
+            vz,
+            wz,
+            plan,
+            goal,
+            obstacle_points,
+            obstacle_points_mask,
+        )
+        return (
+            key,
+            ControlSequence3D(vx=vx, vy=vy, vz=vz, wz=wz),
+            trajectories,
+            costs,
+            obstacle_clearances,
+        )
 
     def _goal_directed_sequence(
         self, pose: jax.Array, goal: jax.Array
@@ -195,7 +289,9 @@ class Optimizer3D:
         wz: jax.Array,
         plan: jax.Array,
         goal: jax.Array,
-    ) -> jax.Array:
+        obstacle_points: jax.Array,
+        obstacle_points_mask: jax.Array,
+    ) -> Tuple[jax.Array, jax.Array]:
         final_xyz = jnp.stack(
             [trajectories.x[:, -1], trajectories.y[:, -1], trajectories.z[:, -1]],
             axis=1,
@@ -213,13 +309,22 @@ class Optimizer3D:
         )
 
         control_cost = jnp.mean(vx**2 + vy**2 + vz**2 + wz**2, axis=1)
+        obstacle_cost, obstacle_clearances, _ = obstacles_critic_score_3d(
+            trajectories,
+            obstacle_points,
+            obstacle_points_mask,
+            self.robot_volume_,
+            self.obstacles_params_,
+        )
 
-        return (
+        total_cost = (
             self.settings_.goal_weight * goal_xyz_cost
             + self.settings_.goal_yaw_weight * goal_yaw_cost
             + self.settings_.path_weight * path_cost
             + self.settings_.control_weight * control_cost
+            + obstacle_cost
         )
+        return total_cost, obstacle_clearances
 
     def _update_control_sequence(
         self, candidate_sequences: ControlSequence3D, costs: jax.Array
@@ -289,6 +394,17 @@ class Optimizer3D:
         if not hasattr(self, "costs_"):
             return None
         return self.costs_
+
+    def getObstacleClearances(self) -> Optional[jax.Array]:
+        if not hasattr(self, "obstacle_clearances_"):
+            return None
+        return self.obstacle_clearances_
+
+    def getLastMinimumClearance(self) -> Optional[jax.Array]:
+        return self.last_minimum_clearance_
+
+    def getLastTrajectoryValidationResult(self) -> Optional[jax.Array]:
+        return self.last_validation_result_
 
     def _clip_controls(self, vx, vy, vz, wz):
         constraints = self.settings_.constraints

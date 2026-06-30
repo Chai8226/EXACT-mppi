@@ -14,6 +14,18 @@ from .models import (
 )
 from .motion_models import YawOnly3DHolonomicMotionModel
 from .geometry import BoxUnionVolume3D
+from .goal_path_critics import (
+    constraint_critic_initialize_3d,
+    constraint_critic_score_3d,
+    goal_critic_initialize_3d,
+    goal_critic_score_3d,
+    goal_yaw_critic_initialize_3d,
+    goal_yaw_critic_score_3d,
+    path_align_critic_initialize_3d,
+    path_align_critic_score_3d,
+    path_follow_critic_initialize_3d,
+    path_follow_critic_score_3d,
+)
 from .obstacles_critic import (
     ObstaclesCriticParams3D,
     obstacles_critic_score_3d,
@@ -81,6 +93,41 @@ class Optimizer3D:
             control_weight=float(control_weight),
         )
         obstacles_params = kwargs.get("ObstaclesCritic", {})
+        self.constraint_params_ = constraint_critic_initialize_3d(
+            self._critic_params(
+                kwargs,
+                "ConstraintCritic",
+                default_weight=control_weight,
+            )
+        )
+        self.goal_params_ = goal_critic_initialize_3d(
+            self._critic_params(
+                kwargs,
+                "GoalCritic",
+                default_weight=goal_weight,
+            )
+        )
+        self.goal_yaw_params_ = goal_yaw_critic_initialize_3d(
+            self._critic_params(
+                kwargs,
+                "GoalYawCritic",
+                default_weight=goal_yaw_weight,
+            )
+        )
+        self.path_align_params_ = path_align_critic_initialize_3d(
+            self._critic_params(
+                kwargs,
+                "PathAlignCritic",
+                default_weight=path_weight,
+            )
+        )
+        self.path_follow_params_ = path_follow_critic_initialize_3d(
+            self._critic_params(
+                kwargs,
+                "PathFollowCritic",
+                default_weight=path_weight,
+            )
+        )
         self.obstacles_params_ = ObstaclesCriticParams3D(
             enabled=bool(
                 kwargs.get("obstacles_enabled", obstacles_params.get("enabled", True))
@@ -244,6 +291,7 @@ class Optimizer3D:
             wz,
             plan,
             goal,
+            pose,
             obstacle_points,
             obstacle_points_mask,
         )
@@ -289,26 +337,41 @@ class Optimizer3D:
         wz: jax.Array,
         plan: jax.Array,
         goal: jax.Array,
+        pose: jax.Array,
         obstacle_points: jax.Array,
         obstacle_points_mask: jax.Array,
     ) -> Tuple[jax.Array, jax.Array]:
-        final_xyz = jnp.stack(
-            [trajectories.x[:, -1], trajectories.y[:, -1], trajectories.z[:, -1]],
-            axis=1,
+        constraint_cost, _ = constraint_critic_score_3d(
+            vx,
+            vy,
+            vz,
+            wz,
+            self.settings_.constraints,
+            self.constraint_params_,
+            self.settings_.model_dt,
         )
-        goal_xyz_cost = jnp.sum((final_xyz - goal[:3]) ** 2, axis=1)
-        goal_yaw_cost = self._shortest_angle(trajectories.yaws[:, -1] - goal[3]) ** 2
-
-        path_xyz = plan[: self.settings_.time_steps, :3]
-        trajectory_xyz = jnp.stack(
-            [trajectories.x, trajectories.y, trajectories.z], axis=2
+        goal_cost, _ = goal_critic_score_3d(
+            trajectories,
+            goal,
+            self.goal_params_,
         )
-        path_cost = jnp.mean(
-            jnp.sum((trajectory_xyz - path_xyz[None, :, :]) ** 2, axis=2),
-            axis=1,
+        goal_yaw_cost, _ = goal_yaw_critic_score_3d(
+            trajectories,
+            pose,
+            goal,
+            self.goal_yaw_params_,
         )
-
-        control_cost = jnp.mean(vx**2 + vy**2 + vz**2 + wz**2, axis=1)
+        path_align_cost, _ = path_align_critic_score_3d(
+            trajectories,
+            plan[: self.settings_.time_steps],
+            self.path_align_params_,
+        )
+        path_follow_cost, _ = path_follow_critic_score_3d(
+            trajectories,
+            pose,
+            plan[: self.settings_.time_steps],
+            self.path_follow_params_,
+        )
         obstacle_cost, obstacle_clearances, _ = obstacles_critic_score_3d(
             trajectories,
             obstacle_points,
@@ -318,10 +381,11 @@ class Optimizer3D:
         )
 
         total_cost = (
-            self.settings_.goal_weight * goal_xyz_cost
-            + self.settings_.goal_yaw_weight * goal_yaw_cost
-            + self.settings_.path_weight * path_cost
-            + self.settings_.control_weight * control_cost
+            constraint_cost
+            + goal_cost
+            + goal_yaw_cost
+            + path_align_cost
+            + path_follow_cost
             + obstacle_cost
         )
         return total_cost, obstacle_clearances
@@ -434,3 +498,13 @@ class Optimizer3D:
             raise ValueError("plan must have shape (T, 4) for [x, y, z, yaw].")
         if plan.shape[0] < time_steps:
             raise ValueError("plan must contain at least time_steps path points.")
+
+    @staticmethod
+    def _critic_params(
+        kwargs: dict,
+        critic_name: str,
+        default_weight: float,
+    ) -> dict:
+        params = dict(kwargs.get(critic_name, {}))
+        params.setdefault("cost_weight", default_weight)
+        return params

@@ -8,6 +8,9 @@ Status: ready-for-agent
   `python3 -m pytest EXACT_MPPI_core/tests/test_mppi_3d_minimal_loop.py EXACT_MPPI_core/tests/test_mppi_3d_box_union_sdf.py`.
 - 2026-06-30: Issue 03 is implemented and has passing focused tests:
   `python3 -m pytest EXACT_MPPI_core/tests/test_mppi_3d_minimal_loop.py EXACT_MPPI_core/tests/test_mppi_3d_box_union_sdf.py EXACT_MPPI_core/tests/test_mppi_3d_obstacles.py`.
+- 2026-06-30: Issue 04 is implemented and has passing focused/full Core tests:
+  `python3 -m pytest EXACT_MPPI_core/tests/test_mppi_3d_goal_path_constraint_critics.py`
+  and `python3 -m pytest EXACT_MPPI_core/tests`.
 
 ## Problem Statement
 

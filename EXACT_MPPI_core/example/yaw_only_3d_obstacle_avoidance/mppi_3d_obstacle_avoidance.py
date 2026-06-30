@@ -1,11 +1,22 @@
 import argparse
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
 from exact_mppi.mppi_3d import BoxUnionVolume3D, MPPIController3D
+
+
+@dataclass(frozen=True)
+class VisualizationFrame3D:
+    robot_state: np.ndarray
+    state_history: np.ndarray
+    local_plan_global: np.ndarray
+    optimal_trajectory_global: Optional[np.ndarray]
+    sampled_rollouts_global: Optional[np.ndarray]
 
 
 @dataclass(frozen=True)
@@ -18,6 +29,7 @@ class ExampleResult3D:
     command_history: np.ndarray
     global_reference_path: np.ndarray
     global_obstacle_points: np.ndarray
+    visualization_frames: tuple[VisualizationFrame3D, ...] = ()
 
 
 def _wrap_to_pi(angle):
@@ -164,14 +176,303 @@ def minimum_state_clearance(
     return float(jax.device_get(jnp.min(distances)))
 
 
+def _capture_visualization_frame(
+    state: np.ndarray,
+    state_history: list[np.ndarray],
+    local_plan: np.ndarray,
+    controller: MPPIController3D,
+    show_rollouts: bool,
+) -> VisualizationFrame3D:
+    optimal_trajectory = controller.getOptimalTrajectory()
+    rollouts = controller.getGeneratedTrajectories() if show_rollouts else None
+
+    optimal_trajectory_global = None
+    if optimal_trajectory is not None:
+        optimal_trajectory_global = transfer_from_local_to_global_frame(
+            np.asarray(optimal_trajectory, dtype=np.float32),
+            state,
+        )
+
+    sampled_rollouts_global = None
+    if rollouts is not None:
+        sampled_rollouts_global = transfer_from_local_to_global_frame(
+            np.asarray(rollouts, dtype=np.float32),
+            state,
+        )
+
+    return VisualizationFrame3D(
+        robot_state=state.copy(),
+        state_history=np.asarray(state_history, dtype=np.float32),
+        local_plan_global=transfer_from_local_to_global_frame(local_plan, state),
+        optimal_trajectory_global=optimal_trajectory_global,
+        sampled_rollouts_global=sampled_rollouts_global,
+    )
+
+
+def _capture_final_visualization_frame(
+    state: np.ndarray,
+    state_history: list[np.ndarray],
+    reference_path: np.ndarray,
+    time_steps: int,
+) -> VisualizationFrame3D:
+    return VisualizationFrame3D(
+        robot_state=state.copy(),
+        state_history=np.asarray(state_history, dtype=np.float32),
+        local_plan_global=transfer_from_local_to_global_frame(
+            select_local_plan(reference_path, state, time_steps),
+            state,
+        ),
+        optimal_trajectory_global=None,
+        sampled_rollouts_global=None,
+    )
+
+
+def _render_3d_obstacle_avoidance_visualization(
+    result: ExampleResult3D,
+    robot_volume_config: list[dict],
+    *,
+    render: bool,
+    save_gif: bool,
+    gif_path: str | Path | None,
+    show_rollouts: bool,
+    frame_duration_ms: int = 100,
+) -> None:
+    if not result.visualization_frames:
+        return
+
+    import matplotlib
+
+    if not render:
+        matplotlib.use("Agg", force=True)
+
+    import matplotlib.pyplot as plt
+    from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+
+    frames = result.visualization_frames
+    fig = plt.figure(figsize=(8, 6))
+    ax = fig.add_subplot(111, projection="3d")
+    gif_images = []
+
+    for frame in frames:
+        _draw_visualization_frame(
+            ax,
+            frame,
+            result,
+            robot_volume_config,
+            Poly3DCollection,
+            show_rollouts=show_rollouts,
+        )
+        fig.canvas.draw()
+
+        if save_gif:
+            from PIL import Image
+
+            width, height = fig.canvas.get_width_height()
+            image = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+            image = image.reshape((height, width, 3))
+            gif_images.append(Image.fromarray(image.copy()))
+
+        if render:
+            plt.pause(0.001)
+
+    if save_gif and gif_images:
+        output_path = (
+            Path(gif_path) if gif_path is not None else Path("yaw_only_3d_mppi.gif")
+        )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        gif_images[0].save(
+            output_path,
+            save_all=True,
+            append_images=gif_images[1:],
+            duration=frame_duration_ms,
+            loop=0,
+        )
+
+    if render:
+        plt.show(block=True)
+    else:
+        plt.close(fig)
+
+
+def _draw_visualization_frame(
+    ax,
+    frame: VisualizationFrame3D,
+    result: ExampleResult3D,
+    robot_volume_config: list[dict],
+    poly_collection_cls,
+    *,
+    show_rollouts: bool,
+) -> None:
+    ax.clear()
+    obstacle_points = result.global_obstacle_points
+    reference_path = result.global_reference_path
+
+    ax.scatter(
+        obstacle_points[:, 0],
+        obstacle_points[:, 1],
+        obstacle_points[:, 2],
+        c="black",
+        s=10,
+        alpha=0.55,
+        label="obstacles",
+    )
+    ax.plot(
+        reference_path[:, 0],
+        reference_path[:, 1],
+        reference_path[:, 2],
+        color="green",
+        linewidth=1.5,
+        label="global reference",
+    )
+    ax.plot(
+        frame.local_plan_global[:, 0],
+        frame.local_plan_global[:, 1],
+        frame.local_plan_global[:, 2],
+        color="blue",
+        linewidth=1.5,
+        label="local plan",
+    )
+    ax.plot(
+        frame.state_history[:, 0],
+        frame.state_history[:, 1],
+        frame.state_history[:, 2],
+        color="tab:orange",
+        linewidth=2.0,
+        label="executed path",
+    )
+
+    if show_rollouts and frame.sampled_rollouts_global is not None:
+        for rollout in frame.sampled_rollouts_global:
+            ax.plot(
+                rollout[:, 0],
+                rollout[:, 1],
+                rollout[:, 2],
+                color="c",
+                linewidth=0.5,
+                alpha=0.12,
+            )
+
+    if frame.optimal_trajectory_global is not None:
+        trajectory = frame.optimal_trajectory_global
+        ax.plot(
+            trajectory[:, 0],
+            trajectory[:, 1],
+            trajectory[:, 2],
+            color="red",
+            linewidth=2.0,
+            label="optimal trajectory",
+        )
+
+    _draw_robot_volume(ax, robot_volume_config, frame.robot_state, poly_collection_cls)
+    _set_equal_3d_axes(
+        ax,
+        [
+            obstacle_points,
+            reference_path[:, :3],
+            frame.local_plan_global[:, :3],
+            frame.state_history[:, :3],
+            frame.optimal_trajectory_global[:, :3]
+            if frame.optimal_trajectory_global is not None
+            else None,
+        ],
+    )
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    ax.set_zlabel("z")
+    ax.legend(loc="upper left")
+
+
+def _draw_robot_volume(
+    ax,
+    robot_volume_config: list[dict],
+    pose: np.ndarray,
+    poly_collection_cls,
+) -> None:
+    for box in robot_volume_config:
+        vertices = _box_vertices_global(box, pose)
+        face_indices = [
+            (0, 1, 2, 3),
+            (4, 5, 6, 7),
+            (0, 1, 5, 4),
+            (2, 3, 7, 6),
+            (1, 2, 6, 5),
+            (0, 3, 7, 4),
+        ]
+        faces = [[vertices[index] for index in face] for face in face_indices]
+        collection = poly_collection_cls(
+            faces,
+            facecolors="tab:orange",
+            edgecolors="tab:orange",
+            linewidths=0.8,
+            alpha=0.22,
+        )
+        ax.add_collection3d(collection)
+
+
+def _box_vertices_global(box: dict, pose: np.ndarray) -> np.ndarray:
+    center = np.asarray(box.get("center", [0.0, 0.0, 0.0]), dtype=np.float32)
+    if "half_extents" in box:
+        half_extents = np.asarray(box["half_extents"], dtype=np.float32)
+    else:
+        half_extents = np.asarray(box["size"], dtype=np.float32) * 0.5
+
+    hx, hy, hz = half_extents
+    offsets = np.array(
+        [
+            [-hx, -hy, -hz],
+            [hx, -hy, -hz],
+            [hx, hy, -hz],
+            [-hx, hy, -hz],
+            [-hx, -hy, hz],
+            [hx, -hy, hz],
+            [hx, hy, hz],
+            [-hx, hy, hz],
+        ],
+        dtype=np.float32,
+    )
+    return transfer_from_local_to_global_frame(center + offsets, pose)
+
+
+def _set_equal_3d_axes(ax, arrays: list[Optional[np.ndarray]]) -> None:
+    finite_points = []
+    for array in arrays:
+        if array is None:
+            continue
+        points = np.asarray(array, dtype=np.float32).reshape(-1, 3)
+        if points.size:
+            finite_points.append(points[np.all(np.isfinite(points), axis=1)])
+    if not finite_points:
+        return
+
+    points = np.vstack(finite_points)
+    mins = np.min(points, axis=0)
+    maxs = np.max(points, axis=0)
+    center = (mins + maxs) * 0.5
+    radius = max(float(np.max(maxs - mins)) * 0.5, 0.5) + 0.2
+    ax.set_xlim(center[0] - radius, center[0] + radius)
+    ax.set_ylim(center[1] - radius, center[1] + radius)
+    ax.set_zlim(center[2] - radius, center[2] + radius)
+    try:
+        ax.set_box_aspect((1.0, 1.0, 1.0))
+    except AttributeError:
+        pass
+
+
 def run_3d_obstacle_avoidance_example(
     max_steps: int = 80,
     goal_tolerance: float = 0.28,
     clearance_margin: float = 0.04,
+    render: bool = False,
+    save_gif: bool = False,
+    gif_path: str | Path | None = None,
+    show_rollouts: bool = False,
+    gif_frame_stride: int = 1,
 ) -> ExampleResult3D:
     model_dt = 0.15
     time_steps = 12
     max_obstacle_points = 48
+    capture_visualization = bool(render or save_gif)
+    gif_frame_stride = max(1, int(gif_frame_stride))
     robot_volume_config = [
         {"center": [0.0, 0.0, 0.0], "size": [0.35, 0.35, 0.35]},
     ]
@@ -193,6 +494,7 @@ def run_3d_obstacle_avoidance_example(
         vz_std=0.24,
         wz_std=0.12,
         temperature=0.25,
+        debug=bool(capture_visualization and show_rollouts),
         goal_weight=6.0,
         path_weight=7.0,
         robot_volume_config=robot_volume_config,
@@ -217,9 +519,10 @@ def run_3d_obstacle_avoidance_example(
     speed = np.zeros(4, dtype=np.float32)
     state_history = [state.copy()]
     command_history = []
+    visualization_frames = []
     min_clearance = minimum_state_clearance(robot_volume, obstacle_points, state)
 
-    for _ in range(max_steps):
+    for step in range(max_steps):
         local_plan = select_local_plan(reference_path, state, time_steps)
         local_goal = transfer_from_global_to_local_frame(goal[None, :], state)[0]
         local_obstacles, local_obstacle_mask = build_range_based_local_observation(
@@ -238,6 +541,18 @@ def run_3d_obstacle_avoidance_example(
             obstacle_points=valid_local_obstacles,
         )
         command = np.asarray(command, dtype=np.float32)
+
+        if capture_visualization and step % gif_frame_stride == 0:
+            visualization_frames.append(
+                _capture_visualization_frame(
+                    state,
+                    state_history,
+                    local_plan,
+                    controller,
+                    show_rollouts,
+                )
+            )
+
         state = integrate_yaw_only_3d_state(state, command, model_dt)
         speed = command
 
@@ -252,7 +567,16 @@ def run_3d_obstacle_avoidance_example(
     final_distance = float(np.linalg.norm(state[:3] - goal[:3]))
     reached_goal = final_distance <= goal_tolerance
     collided = min_clearance < clearance_margin
-    return ExampleResult3D(
+    if capture_visualization:
+        visualization_frames.append(
+            _capture_final_visualization_frame(
+                state,
+                state_history,
+                reference_path,
+                time_steps,
+            )
+        )
+    result = ExampleResult3D(
         reached_goal=reached_goal,
         collided=collided,
         min_sdf_clearance=float(min_clearance),
@@ -261,7 +585,18 @@ def run_3d_obstacle_avoidance_example(
         command_history=np.asarray(command_history, dtype=np.float32),
         global_reference_path=reference_path,
         global_obstacle_points=obstacle_points,
+        visualization_frames=tuple(visualization_frames),
     )
+    if capture_visualization:
+        _render_3d_obstacle_avoidance_visualization(
+            result,
+            robot_volume_config,
+            render=render,
+            save_gif=save_gif,
+            gif_path=gif_path,
+            show_rollouts=show_rollouts,
+        )
+    return result
 
 
 def main() -> int:
@@ -271,12 +606,34 @@ def main() -> int:
     parser.add_argument("--max-steps", type=int, default=80)
     parser.add_argument("--goal-tolerance", type=float, default=0.28)
     parser.add_argument("--clearance-margin", type=float, default=0.04)
+    parser.add_argument(
+        "--render",
+        action="store_true",
+        help="Display matplotlib 3D visualization.",
+    )
+    parser.add_argument(
+        "--save-gif",
+        action="store_true",
+        help="Save matplotlib 3D visualization as a GIF.",
+    )
+    parser.add_argument("--gif-path", type=Path, default=Path("yaw_only_3d_mppi.gif"))
+    parser.add_argument(
+        "--show-rollouts",
+        action="store_true",
+        help="Visualize sampled MPPI rollouts.",
+    )
+    parser.add_argument("--gif-frame-stride", type=int, default=1)
     args = parser.parse_args()
 
     result = run_3d_obstacle_avoidance_example(
         max_steps=args.max_steps,
         goal_tolerance=args.goal_tolerance,
         clearance_margin=args.clearance_margin,
+        render=args.render,
+        save_gif=args.save_gif,
+        gif_path=args.gif_path,
+        show_rollouts=args.show_rollouts,
+        gif_frame_stride=args.gif_frame_stride,
     )
     final_distance = np.linalg.norm(
         result.final_state[:3] - result.global_reference_path[-1, :3]

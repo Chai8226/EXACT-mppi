@@ -1,6 +1,6 @@
 # 为 3D example 增加 matplotlib 3D 可视化与 GIF 保存
 
-Status: ready-for-agent
+Status: implemented
 
 ## Parent
 

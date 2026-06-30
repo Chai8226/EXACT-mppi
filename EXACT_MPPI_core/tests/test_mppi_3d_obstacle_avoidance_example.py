@@ -31,10 +31,29 @@ def test_core_only_3d_obstacle_avoidance_example_reaches_goal_headlessly():
     assert result.global_obstacle_points.shape[1] == 3
     assert result.global_reference_path.shape[1] == 4
     assert result.command_history.shape[1] == 4
+    assert result.visualization_frames == ()
     assert (
         np.linalg.norm(result.final_state[:3] - result.global_reference_path[-1, :3])
         <= 0.28
     )
+
+
+def test_3d_example_can_save_visualization_gif_headlessly(tmp_path, monkeypatch):
+    monkeypatch.setenv("MPLCONFIGDIR", str(tmp_path / "matplotlib"))
+    example = _load_example_module()
+    gif_path = tmp_path / "yaw_only_3d_mppi.gif"
+
+    result = example.run_3d_obstacle_avoidance_example(
+        max_steps=2,
+        render=False,
+        save_gif=True,
+        gif_path=gif_path,
+        show_rollouts=True,
+    )
+
+    assert result.state_history.shape[0] >= 2
+    assert gif_path.exists()
+    assert gif_path.stat().st_size > 0
 
 
 def test_3d_example_builds_range_based_local_observation_with_mask():

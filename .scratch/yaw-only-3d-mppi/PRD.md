@@ -18,6 +18,11 @@ Status: ready-for-agent
   `PYTHONPATH=EXACT_MPPI_core python3 EXACT_MPPI_core/example/yaw_only_3d_obstacle_avoidance/mppi_3d_obstacle_avoidance.py`,
   `python3 -m pytest EXACT_MPPI_core/tests/test_mppi_3d_obstacle_avoidance_example.py`,
   and `python3 -m pytest EXACT_MPPI_core/tests`.
+- 2026-06-30: Issue 07 is implemented and has passing focused/full Core tests:
+  `python3 -m py_compile EXACT_MPPI_core/example/yaw_only_3d_obstacle_avoidance/mppi_3d_obstacle_avoidance.py`,
+  `PYTHONPATH=EXACT_MPPI_core python3 EXACT_MPPI_core/example/yaw_only_3d_obstacle_avoidance/mppi_3d_obstacle_avoidance.py --max-steps 80`,
+  `python3 -m pytest EXACT_MPPI_core/tests/test_mppi_3d_obstacle_avoidance_example.py`,
+  and `python3 -m pytest EXACT_MPPI_core/tests`.
 
 ## Problem Statement
 

@@ -30,3 +30,6 @@ all = ['ir-sim>=2.4.0']
 
 [tool.setuptools.packages.find]
 include = ["exact_mppi*"]
+
+[tool.setuptools.package-data]
+"exact_mppi.scenarios_3d" = ["*.yaml"]

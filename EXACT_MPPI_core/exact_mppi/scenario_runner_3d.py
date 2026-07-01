@@ -47,6 +47,10 @@ class ScenarioRunResult3D:
             "final_distance": self.final_distance,
             "minimum_clearance": self.minimum_clearance,
             "step_count": self.step_count,
+            **compute_3d_smoothness_telemetry(
+                command_history=self.command_history,
+                state_history=self.state_history,
+            ),
         }
 
 
@@ -146,6 +150,56 @@ def run_3d_scenario(config: Mapping[str, Any]) -> ScenarioRunResult3D:
         global_obstacle_points=obstacle_points,
         robot_volume_config=robot_volume_config,
     )
+
+
+def compute_3d_smoothness_telemetry(
+    *,
+    command_history: np.ndarray,
+    state_history: np.ndarray,
+) -> dict[str, dict[str, float | int]]:
+    """Compute step-history smoothness metrics for yaw-only 3D scenario runs.
+
+    The metrics are derived only from executed scenario histories. They do not
+    use viewer frame rate, playback interpolation, or wall-clock timing.
+
+    Command smoothness is measured as L2 norms of adjacent command deltas in
+    `[vx, vy, vz, wz]`. Trajectory smoothness is measured as L2 norms of second
+    differences in executed `[x, y, z, yaw]` states after yaw unwrapping.
+    """
+
+    commands = _as_history_matrix(command_history, width=4, name="command_history")
+    states = _as_history_matrix(state_history, width=4, name="state_history")
+
+    command_deltas = np.diff(commands, axis=0)
+    command_delta_norms = np.linalg.norm(command_deltas, axis=1)
+
+    unwrapped_states = states.copy()
+    if unwrapped_states.shape[0] > 0:
+        unwrapped_states[:, 3] = np.unwrap(unwrapped_states[:, 3])
+    trajectory_second_differences = np.diff(unwrapped_states, n=2, axis=0)
+    trajectory_second_difference_norms = np.linalg.norm(
+        trajectory_second_differences,
+        axis=1,
+    )
+
+    return {
+        "command_smoothness": _norm_metrics(
+            command_delta_norms,
+            sample_count_name="sample_count",
+            mean_name="mean_delta_norm",
+            rms_name="rms_delta_norm",
+            max_name="max_delta_norm",
+            total_name="total_delta_norm",
+        ),
+        "trajectory_smoothness": _norm_metrics(
+            trajectory_second_difference_norms,
+            sample_count_name="sample_count",
+            mean_name="mean_second_difference_norm",
+            rms_name="rms_second_difference_norm",
+            max_name="max_second_difference_norm",
+            total_name="total_second_difference_norm",
+        ),
+    }
 
 
 def build_range_based_local_observation(
@@ -349,6 +403,47 @@ def _merge_minimum_clearance(
     if next_clearance is None:
         return current
     return min(current, next_clearance)
+
+
+def _as_history_matrix(
+    history: np.ndarray,
+    *,
+    width: int,
+    name: str,
+) -> np.ndarray:
+    arr = np.asarray(history, dtype=np.float64)
+    if arr.size == 0:
+        return np.empty((0, width), dtype=np.float64)
+    if arr.ndim != 2 or arr.shape[1] != width:
+        raise ValueError(f"{name} must have shape (N, {width}).")
+    return arr
+
+
+def _norm_metrics(
+    values: np.ndarray,
+    *,
+    sample_count_name: str,
+    mean_name: str,
+    rms_name: str,
+    max_name: str,
+    total_name: str,
+) -> dict[str, float | int]:
+    if values.size == 0:
+        return {
+            sample_count_name: 0,
+            mean_name: 0.0,
+            rms_name: 0.0,
+            max_name: 0.0,
+            total_name: 0.0,
+        }
+
+    return {
+        sample_count_name: int(values.size),
+        mean_name: float(np.mean(values)),
+        rms_name: float(np.sqrt(np.mean(values**2))),
+        max_name: float(np.max(values)),
+        total_name: float(np.sum(values)),
+    }
 
 
 def _wrap_to_pi(angle):

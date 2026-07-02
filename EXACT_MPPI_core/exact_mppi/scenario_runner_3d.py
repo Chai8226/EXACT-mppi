@@ -275,6 +275,8 @@ def run_3d_scenario(
     observed_point_cloud_history = []
     minimum_clearance = _minimum_state_clearance(
         robot_volume,
+        robot_volume_config,
+        obstacle_geometry_config,
         obstacle_points,
         state,
     )
@@ -337,7 +339,13 @@ def run_3d_scenario(
         if collect_rollouts:
             rollout_history.append(global_rollouts.copy())
 
-        clearance = _minimum_state_clearance(robot_volume, obstacle_points, state)
+        clearance = _minimum_state_clearance(
+            robot_volume,
+            robot_volume_config,
+            obstacle_geometry_config,
+            obstacle_points,
+            state,
+        )
         minimum_clearance = _merge_minimum_clearance(minimum_clearance, clearance)
         clearance_history.append(clearance)
 
@@ -1233,9 +1241,17 @@ def _finite_vector3(value: Any, name: str) -> list[float]:
 
 def _minimum_state_clearance(
     robot_volume: BoxUnionVolume3D,
+    robot_volume_config: list[dict[str, Any]],
+    obstacle_geometry_config: list[dict[str, Any]],
     global_obstacle_points: np.ndarray,
     robot_pose: np.ndarray,
 ) -> float | None:
+    if obstacle_geometry_config:
+        return _minimum_geometry_clearance(
+            robot_volume_config,
+            obstacle_geometry_config,
+            robot_pose,
+        )
     if global_obstacle_points.size == 0:
         return None
     body_points = transfer_from_global_to_local_frame(
@@ -1246,6 +1262,240 @@ def _minimum_state_clearance(
         jnp.asarray(body_points, dtype=jnp.float32)
     )
     return float(jax.device_get(jnp.min(distances)))
+
+
+def _minimum_geometry_clearance(
+    robot_volume_config: list[dict[str, Any]],
+    obstacle_geometry_config: list[dict[str, Any]],
+    robot_pose: np.ndarray,
+) -> float | None:
+    robot_boxes = _robot_world_boxes(robot_volume_config, robot_pose)
+    obstacle_boxes = [
+        _axis_aligned_world_box(obstacle)
+        for obstacle in obstacle_geometry_config
+    ]
+    clearances = [
+        _signed_obb_clearance(robot_box, obstacle_box)
+        for robot_box in robot_boxes
+        for obstacle_box in obstacle_boxes
+    ]
+    if not clearances:
+        return None
+    return float(min(clearances))
+
+
+def _robot_world_boxes(
+    robot_volume_config: list[dict[str, Any]],
+    robot_pose: np.ndarray,
+) -> list[dict[str, np.ndarray]]:
+    pose = np.asarray(robot_pose, dtype=np.float32).reshape(-1)
+    c = float(np.cos(pose[3]))
+    s = float(np.sin(pose[3]))
+    axes = np.asarray(
+        [
+            [c, s, 0.0],
+            [-s, c, 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+
+    boxes = []
+    for box in robot_volume_config:
+        local_center = np.asarray(box.get("center", [0.0, 0.0, 0.0]), dtype=np.float32)
+        size = np.asarray(box["size"], dtype=np.float32)
+        center = transfer_from_local_to_global_frame(local_center[None, :], pose)[0]
+        boxes.append(
+            {
+                "center": center.astype(np.float32),
+                "axes": axes,
+                "half_size": (size * 0.5).astype(np.float32),
+            }
+        )
+    return boxes
+
+
+def _axis_aligned_world_box(obstacle: Mapping[str, Any]) -> dict[str, np.ndarray]:
+    return {
+        "center": np.asarray(obstacle["center"], dtype=np.float32),
+        "axes": np.eye(3, dtype=np.float32),
+        "half_size": (np.asarray(obstacle["size"], dtype=np.float32) * 0.5).astype(
+            np.float32
+        ),
+    }
+
+
+def _signed_obb_clearance(
+    first: Mapping[str, np.ndarray],
+    second: Mapping[str, np.ndarray],
+) -> float:
+    intersects, penetration = _obb_intersection_penetration(first, second)
+    if intersects:
+        return -float(penetration)
+    return float(_obb_surface_distance(first, second))
+
+
+def _obb_intersection_penetration(
+    first: Mapping[str, np.ndarray],
+    second: Mapping[str, np.ndarray],
+) -> tuple[bool, float]:
+    axes = []
+    first_axes = np.asarray(first["axes"], dtype=np.float32)
+    second_axes = np.asarray(second["axes"], dtype=np.float32)
+    axes.extend(first_axes)
+    axes.extend(second_axes)
+    for first_axis in first_axes:
+        for second_axis in second_axes:
+            cross_axis = np.cross(first_axis, second_axis)
+            if np.linalg.norm(cross_axis) > 1e-7:
+                axes.append(cross_axis)
+
+    min_overlap = np.inf
+    for axis in axes:
+        norm = float(np.linalg.norm(axis))
+        if norm <= 1e-7:
+            continue
+        unit_axis = np.asarray(axis, dtype=np.float32) / norm
+        first_min, first_max = _project_obb(first, unit_axis)
+        second_min, second_max = _project_obb(second, unit_axis)
+        overlap = min(first_max, second_max) - max(first_min, second_min)
+        if overlap < 0.0:
+            return False, 0.0
+        min_overlap = min(min_overlap, overlap)
+    if not np.isfinite(min_overlap):
+        min_overlap = 0.0
+    return True, float(min_overlap)
+
+
+def _project_obb(
+    box: Mapping[str, np.ndarray],
+    axis: np.ndarray,
+) -> tuple[float, float]:
+    center = float(np.dot(box["center"], axis))
+    radius = float(
+        np.sum(np.asarray(box["half_size"]) * np.abs(np.asarray(box["axes"]) @ axis))
+    )
+    return center - radius, center + radius
+
+
+def _obb_surface_distance(
+    first: Mapping[str, np.ndarray],
+    second: Mapping[str, np.ndarray],
+) -> float:
+    distances = []
+    first_corners = _obb_corners(first)
+    second_corners = _obb_corners(second)
+    distances.extend(_point_to_obb_distance(corner, second) for corner in first_corners)
+    distances.extend(_point_to_obb_distance(corner, first) for corner in second_corners)
+
+    first_edges = _obb_edges(first_corners)
+    second_edges = _obb_edges(second_corners)
+    for first_start, first_end in first_edges:
+        for second_start, second_end in second_edges:
+            distances.append(
+                _segment_segment_distance(
+                    first_start,
+                    first_end,
+                    second_start,
+                    second_end,
+                )
+            )
+    return float(min(distances)) if distances else np.inf
+
+
+def _obb_corners(box: Mapping[str, np.ndarray]) -> list[np.ndarray]:
+    center = np.asarray(box["center"], dtype=np.float32)
+    axes = np.asarray(box["axes"], dtype=np.float32)
+    half_size = np.asarray(box["half_size"], dtype=np.float32)
+    corners = []
+    for x_sign in (-1.0, 1.0):
+        for y_sign in (-1.0, 1.0):
+            for z_sign in (-1.0, 1.0):
+                signs = np.asarray([x_sign, y_sign, z_sign], dtype=np.float32)
+                corners.append(center + (signs * half_size) @ axes)
+    return corners
+
+
+def _obb_edges(corners: list[np.ndarray]) -> list[tuple[np.ndarray, np.ndarray]]:
+    edges = []
+    signs = [
+        (x_sign, y_sign, z_sign)
+        for x_sign in (-1.0, 1.0)
+        for y_sign in (-1.0, 1.0)
+        for z_sign in (-1.0, 1.0)
+    ]
+    for first_index, first_signs in enumerate(signs):
+        for second_index in range(first_index + 1, len(signs)):
+            second_signs = signs[second_index]
+            if sum(a != b for a, b in zip(first_signs, second_signs)) == 1:
+                edges.append((corners[first_index], corners[second_index]))
+    return edges
+
+
+def _point_to_obb_distance(point: np.ndarray, box: Mapping[str, np.ndarray]) -> float:
+    delta = np.asarray(point, dtype=np.float32) - np.asarray(
+        box["center"],
+        dtype=np.float32,
+    )
+    local = np.asarray(box["axes"], dtype=np.float32) @ delta
+    outside = np.maximum(
+        np.abs(local) - np.asarray(box["half_size"], dtype=np.float32),
+        0.0,
+    )
+    return float(np.linalg.norm(outside))
+
+
+def _segment_segment_distance(
+    first_start: np.ndarray,
+    first_end: np.ndarray,
+    second_start: np.ndarray,
+    second_end: np.ndarray,
+) -> float:
+    u = np.asarray(first_end, dtype=np.float64) - np.asarray(
+        first_start,
+        dtype=np.float64,
+    )
+    v = np.asarray(second_end, dtype=np.float64) - np.asarray(
+        second_start,
+        dtype=np.float64,
+    )
+    w = np.asarray(first_start, dtype=np.float64) - np.asarray(
+        second_start,
+        dtype=np.float64,
+    )
+    a = float(np.dot(u, u))
+    b = float(np.dot(u, v))
+    c = float(np.dot(v, v))
+    d = float(np.dot(u, w))
+    e = float(np.dot(v, w))
+    denominator = a * c - b * b
+    small = 1e-12
+
+    if a <= small and c <= small:
+        return float(np.linalg.norm(w))
+    if a <= small:
+        t = np.clip(e / c, 0.0, 1.0)
+        closest = w - t * v
+        return float(np.linalg.norm(closest))
+    if c <= small:
+        s = np.clip(-d / a, 0.0, 1.0)
+        closest = w + s * u
+        return float(np.linalg.norm(closest))
+
+    if denominator < small:
+        s = 0.0
+    else:
+        s = np.clip((b * e - c * d) / denominator, 0.0, 1.0)
+    t = (b * s + e) / c
+    if t < 0.0:
+        t = 0.0
+        s = np.clip(-d / a, 0.0, 1.0)
+    elif t > 1.0:
+        t = 1.0
+        s = np.clip((b - d) / a, 0.0, 1.0)
+
+    closest = w + s * u - t * v
+    return float(np.linalg.norm(closest))
 
 
 def _merge_minimum_clearance(

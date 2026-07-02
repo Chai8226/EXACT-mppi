@@ -18,7 +18,6 @@ from exact_mppi.scenario_runner_3d import (
     run_3d_scenario,
     run_3d_static_scenario_suite,
     select_global_plan,
-    transfer_from_global_to_local_frame,
     write_3d_baseline_replay_artifacts,
     write_3d_replay_json,
 )
@@ -554,6 +553,50 @@ def test_migrated_builtin_config_does_not_need_legacy_points_for_perception(
     assert captured_obstacle_points[0].shape[0] > 0
 
 
+def test_geometry_truth_reports_collision_when_observed_cloud_is_empty(monkeypatch):
+    class FakeController:
+        def computeVelocityCommands(self, **_):
+            return np.zeros(4, dtype=np.float32)
+
+        def getOptimalTrajectory(self):
+            return None
+
+    monkeypatch.setattr(
+        scenario_runner_3d,
+        "_build_controller",
+        lambda *_, **__: FakeController(),
+    )
+
+    config = make_mid360_tracer_bullet_config()
+    config["simulation"]["max_steps"] = 1
+    config["simulation"]["clearance_margin"] = 0.04
+    config["sensor"]["min_range_m"] = 1.0
+    config["obstacles"] = {
+        "geometry": [
+            {
+                "type": "box",
+                "center": [1.0, 2.0, 0.0],
+                "size": [0.2, 0.2, 0.2],
+            }
+        ],
+        "points": [],
+    }
+
+    result = run_3d_scenario(config)
+    replay = build_3d_replay_data(result)
+    report = build_3d_baseline_report([result])
+
+    assert result.global_obstacle_points.shape == (0, 3)
+    assert result.observed_point_cloud_history[0].shape == (0, 3)
+    assert result.minimum_clearance is not None
+    assert result.minimum_clearance < 0.0
+    assert result.collided is True
+    assert replay["summary"]["collided"] is True
+    assert np.isfinite(replay["frames"][0]["clearance"])
+    assert report["aggregate"]["collision_count"] == 1
+    assert report["aggregate"]["collided_scenarios"] == ["mid360_tracer_bullet"]
+
+
 def test_mid360_config_requires_controller_point_budget():
     config = load_builtin_scenario_config("narrow_gap_t_volume_3d")
     del config["controller"]["max_obs_num"]
@@ -758,12 +801,15 @@ def recompute_minimum_clearance_from_result_volume(result):
     volume = BoxUnionVolume3D.from_config(result.robot_volume_config)
     clearances = []
     for state in result.state_history:
-        body_points = transfer_from_global_to_local_frame(
-            result.global_obstacle_points,
-            state,
+        clearances.append(
+            scenario_runner_3d._minimum_state_clearance(
+                volume,
+                result.robot_volume_config,
+                result.obstacle_geometry_config,
+                result.global_obstacle_points,
+                state,
+            )
         )
-        distances = volume.signed_distance(jnp.asarray(body_points, dtype=jnp.float32))
-        clearances.append(float(jax.device_get(jnp.min(distances))))
     return min(clearances)
 
 

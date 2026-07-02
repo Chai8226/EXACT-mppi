@@ -98,5 +98,6 @@ def test_static_3d_replay_viewer_documents_manual_smoke_check():
     readme = viewer_files.joinpath("README.md").read_text(encoding="utf-8")
 
     assert "--replay-json" in readme
+    assert "--replay-rollouts" in readme
     assert "index.html" in readme
     assert "narrow_gap_t_volume_3d" in readme

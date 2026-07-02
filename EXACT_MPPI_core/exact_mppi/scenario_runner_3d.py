@@ -45,6 +45,7 @@ class ScenarioRunResult3D:
     command_history: np.ndarray
     local_plan_history: np.ndarray
     optimal_trajectory_history: np.ndarray
+    rollout_history: list[np.ndarray]
     clearance_history: list[float | None]
     global_reference_path: np.ndarray
     global_obstacle_points: np.ndarray
@@ -84,7 +85,12 @@ def run_3d_static_scenario_suite(
     return [run_3d_scenario(load_builtin_scenario_config(name)) for name in names]
 
 
-def run_3d_scenario(config: Mapping[str, Any]) -> ScenarioRunResult3D:
+def run_3d_scenario(
+    config: Mapping[str, Any],
+    *,
+    collect_rollouts: bool = False,
+    max_rollouts: int = 8,
+) -> ScenarioRunResult3D:
     cfg = copy.deepcopy(dict(config))
     scenario_name = str(cfg["name"])
     simulation = dict(cfg.get("simulation", {}))
@@ -99,8 +105,11 @@ def run_3d_scenario(config: Mapping[str, Any]) -> ScenarioRunResult3D:
     robot_volume = BoxUnionVolume3D.from_config(robot_volume_config)
     reference_path = _build_reference_path(cfg["reference_path"])
     obstacle_points = _build_obstacle_points(cfg.get("obstacles", {}))
+    controller_config = dict(cfg.get("controller", {}))
+    if collect_rollouts:
+        controller_config["debug"] = True
     controller = _build_controller(
-        cfg.get("controller", {}),
+        controller_config,
         model_dt=model_dt,
         max_obstacle_points=max_obstacle_points,
         robot_volume_config=robot_volume_config,
@@ -115,6 +124,7 @@ def run_3d_scenario(config: Mapping[str, Any]) -> ScenarioRunResult3D:
     command_history = []
     local_plan_history = []
     optimal_trajectory_history = []
+    rollout_history = []
     minimum_clearance = _minimum_state_clearance(
         robot_volume,
         obstacle_points,
@@ -149,6 +159,14 @@ def run_3d_scenario(config: Mapping[str, Any]) -> ScenarioRunResult3D:
                 np.asarray(optimal_trajectory, dtype=np.float32),
                 state,
             )
+        global_rollouts = np.empty((0, 0, 4), dtype=np.float32)
+        if collect_rollouts:
+            generated_rollouts = controller.getGeneratedTrajectories()
+            global_rollouts = _sample_global_rollouts(
+                generated_rollouts,
+                state,
+                max_rollouts=max_rollouts,
+            )
 
         state = integrate_yaw_only_3d_state(state, command, model_dt)
         speed = command
@@ -156,6 +174,8 @@ def run_3d_scenario(config: Mapping[str, Any]) -> ScenarioRunResult3D:
         command_history.append(command.copy())
         local_plan_history.append(global_plan.copy())
         optimal_trajectory_history.append(global_optimal_trajectory.copy())
+        if collect_rollouts:
+            rollout_history.append(global_rollouts.copy())
 
         clearance = _minimum_state_clearance(robot_volume, obstacle_points, state)
         minimum_clearance = _merge_minimum_clearance(minimum_clearance, clearance)
@@ -185,6 +205,7 @@ def run_3d_scenario(config: Mapping[str, Any]) -> ScenarioRunResult3D:
             optimal_trajectory_history,
             dtype=np.float32,
         ),
+        rollout_history=rollout_history,
         clearance_history=clearance_history,
         global_reference_path=reference_path,
         global_obstacle_points=obstacle_points,
@@ -192,29 +213,39 @@ def run_3d_scenario(config: Mapping[str, Any]) -> ScenarioRunResult3D:
     )
 
 
-def build_3d_replay_data(result: ScenarioRunResult3D) -> dict[str, Any]:
+def build_3d_replay_data(
+    result: ScenarioRunResult3D,
+    *,
+    include_rollouts: bool = False,
+    max_rollouts: int = 8,
+) -> dict[str, Any]:
     goal = result.global_reference_path[-1]
     frames = []
     for idx, command in enumerate(result.command_history):
         state = result.state_history[idx + 1]
         frame_command_history = result.command_history[: idx + 1]
         frame_state_history = result.state_history[: idx + 2]
-        frames.append(
-            {
-                "frame_index": idx,
-                "state": state.tolist(),
-                "executed_path": frame_state_history.tolist(),
-                "local_plan": result.local_plan_history[idx].tolist(),
-                "optimal_trajectory": result.optimal_trajectory_history[idx].tolist(),
-                "command": command.tolist(),
-                "clearance": result.clearance_history[idx + 1],
-                "goal_distance": float(np.linalg.norm(state[:3] - goal[:3])),
-                "smoothness_telemetry": compute_3d_smoothness_telemetry(
-                    command_history=frame_command_history,
-                    state_history=frame_state_history,
-                ),
-            }
-        )
+        frame = {
+            "frame_index": idx,
+            "state": state.tolist(),
+            "executed_path": frame_state_history.tolist(),
+            "local_plan": result.local_plan_history[idx].tolist(),
+            "optimal_trajectory": result.optimal_trajectory_history[idx].tolist(),
+            "command": command.tolist(),
+            "clearance": result.clearance_history[idx + 1],
+            "goal_distance": float(np.linalg.norm(state[:3] - goal[:3])),
+            "smoothness_telemetry": compute_3d_smoothness_telemetry(
+                command_history=frame_command_history,
+                state_history=frame_state_history,
+            ),
+        }
+        if include_rollouts:
+            frame["rollouts"] = _bounded_rollouts_for_frame(
+                result.rollout_history,
+                idx,
+                max_rollouts=max_rollouts,
+            )
+        frames.append(frame)
 
     return {
         "schema_version": 1,
@@ -241,9 +272,16 @@ def build_3d_replay_data(result: ScenarioRunResult3D) -> dict[str, Any]:
 def write_3d_replay_json(
     result: ScenarioRunResult3D,
     path: str | Path,
+    *,
+    include_rollouts: bool = False,
+    max_rollouts: int = 8,
 ) -> None:
     replay_json = json.dumps(
-        build_3d_replay_data(result),
+        build_3d_replay_data(
+            result,
+            include_rollouts=include_rollouts,
+            max_rollouts=max_rollouts,
+        ),
         allow_nan=False,
         sort_keys=True,
     )
@@ -393,6 +431,41 @@ def transfer_from_local_to_global_frame(
     return out
 
 
+def _sample_global_rollouts(
+    local_rollouts: np.ndarray | None,
+    pose: np.ndarray,
+    *,
+    max_rollouts: int,
+) -> np.ndarray:
+    if local_rollouts is None or max_rollouts <= 0:
+        return np.empty((0, 0, 4), dtype=np.float32)
+
+    rollouts = np.asarray(local_rollouts, dtype=np.float32)
+    if rollouts.size == 0:
+        return np.empty((0, 0, 4), dtype=np.float32)
+    rollouts = rollouts.reshape((rollouts.shape[0], rollouts.shape[1], 4))
+    sample_count = min(max_rollouts, rollouts.shape[0])
+    sample_indices = np.linspace(
+        0,
+        rollouts.shape[0] - 1,
+        sample_count,
+        dtype=np.int32,
+    )
+    sampled = rollouts[sample_indices]
+    return transfer_from_local_to_global_frame(sampled, pose).astype(np.float32)
+
+
+def _bounded_rollouts_for_frame(
+    rollout_history: list[np.ndarray],
+    frame_index: int,
+    *,
+    max_rollouts: int,
+) -> list[Any]:
+    if max_rollouts <= 0 or frame_index >= len(rollout_history):
+        return []
+    return rollout_history[frame_index][:max_rollouts].tolist()
+
+
 def integrate_yaw_only_3d_state(
     state: np.ndarray,
     command: np.ndarray,
@@ -430,6 +503,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Write Offline Web replay JSON for the selected scenario.",
     )
+    parser.add_argument(
+        "--replay-rollouts",
+        action="store_true",
+        help="Include bounded sampled MPPI rollouts in replay JSON.",
+    )
+    parser.add_argument(
+        "--replay-max-rollouts",
+        type=int,
+        default=8,
+        help="Maximum sampled rollouts per replay frame when rollouts are enabled.",
+    )
     return parser
 
 
@@ -446,11 +530,20 @@ def main(argv: list[str] | None = None) -> int:
             if args.config is not None
             else load_builtin_scenario_config(args.scenario)
         )
-        result = run_3d_scenario(config)
+        result = run_3d_scenario(
+            config,
+            collect_rollouts=args.replay_rollouts,
+            max_rollouts=args.replay_max_rollouts,
+        )
         summary_json = json.dumps(result.summary, allow_nan=False, sort_keys=True)
         exit_ok = result.reached_goal and not result.collided
         if args.replay_json is not None:
-            write_3d_replay_json(result, args.replay_json)
+            write_3d_replay_json(
+                result,
+                args.replay_json,
+                include_rollouts=args.replay_rollouts,
+                max_rollouts=args.replay_max_rollouts,
+            )
 
     if args.summary_json is not None:
         args.summary_json.parent.mkdir(parents=True, exist_ok=True)

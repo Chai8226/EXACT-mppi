@@ -117,6 +117,40 @@ def test_narrow_gap_t_volume_3d_exports_finite_replay_data(tmp_path):
     assert replay["scene"]["robot_volume"]["boxes"] == result.robot_volume_config
 
 
+def test_replay_rollouts_are_omitted_by_default():
+    result = run_3d_scenario(load_builtin_scenario_config("open_track_3d"))
+
+    replay = build_3d_replay_data(result)
+
+    assert "rollouts" not in replay["frames"][0]
+    assert result.rollout_history == []
+
+
+def test_replay_rollouts_are_optional_bounded_and_world_frame(tmp_path):
+    result = run_3d_scenario(
+        load_builtin_scenario_config("open_track_3d"),
+        collect_rollouts=True,
+        max_rollouts=3,
+    )
+
+    replay = build_3d_replay_data(result, include_rollouts=True, max_rollouts=2)
+    replay_path = tmp_path / "open_track_3d_rollouts.replay.json"
+    write_3d_replay_json(
+        result,
+        replay_path,
+        include_rollouts=True,
+        max_rollouts=2,
+    )
+    written_replay = json.loads(replay_path.read_text(encoding="utf-8"))
+
+    assert written_replay == replay
+    assert len(result.rollout_history) == result.step_count
+    assert len(replay["frames"][0]["rollouts"]) <= 2
+    assert len(replay["frames"][-1]["rollouts"]) <= 2
+    assert_replay_rollouts_are_finite_and_world_frame(replay)
+    json.dumps(replay, allow_nan=False)
+
+
 def test_static_3d_scenario_suite_contains_first_static_scenarios():
     assert STATIC_3D_SCENARIOS == (
         "open_track_3d",
@@ -318,6 +352,17 @@ def assert_replay_geometry_is_world_frame(replay):
 def assert_frame_arrays_are_finite(frame):
     for key in ("state", "executed_path", "command", "local_plan", "optimal_trajectory"):
         assert np.all(np.isfinite(np.asarray(frame[key], dtype=np.float32)))
+    for rollout in frame.get("rollouts", []):
+        assert np.all(np.isfinite(np.asarray(rollout, dtype=np.float32)))
+
+
+def assert_replay_rollouts_are_finite_and_world_frame(replay):
+    final_frame = replay["frames"][-1]
+
+    assert final_frame["state"][0] > 1.0
+    for rollout in final_frame["rollouts"]:
+        assert rollout[0][0] > 1.0
+        assert np.all(np.isfinite(np.asarray(rollout, dtype=np.float32)))
 
 
 def recompute_minimum_clearance_from_result_volume(result):

@@ -46,6 +46,8 @@ const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.target.set(1.6, 0.2, 0);
 
+const LOCAL_PLAN_RENDER_ORDER = 30;
+
 const layerGroups = {
   obstacles: new THREE.Group(),
   obstacleGeometry: new THREE.Group(),
@@ -63,7 +65,7 @@ const layerColors = {
   obstacleGeometry: 0xe05a47,
   obstacleGeometryEdges: 0x772f28,
   referencePath: 0x4aa3df,
-  localPlan: 0xb48cf2,
+  localPlan: 0xff4fd8,
   executedPath: 0x55c2a3,
   optimalTrajectory: 0xf2c14e,
   rollouts: 0x7d8790,
@@ -87,7 +89,18 @@ const materials = {
     opacity: 0.84,
   }),
   reference: new THREE.LineBasicMaterial({ color: layerColors.referencePath }),
-  localPlan: new THREE.LineBasicMaterial({ color: layerColors.localPlan }),
+  localPlan: new THREE.LineBasicMaterial({
+    color: layerColors.localPlan,
+    depthTest: false,
+    depthWrite: false,
+  }),
+  localPlanMarker: new THREE.PointsMaterial({
+    color: layerColors.localPlan,
+    size: 0.09,
+    sizeAttenuation: true,
+    depthTest: false,
+    depthWrite: false,
+  }),
   executed: new THREE.LineBasicMaterial({ color: layerColors.executedPath }),
   optimal: new THREE.LineBasicMaterial({ color: layerColors.optimalTrajectory }),
   rollouts: new THREE.LineBasicMaterial({
@@ -236,8 +249,20 @@ function renderReferencePath(path) {
 function renderLocalPlan(path) {
   const line = makeLine(path, materials.localPlan);
   if (line) {
+    line.renderOrder = LOCAL_PLAN_RENDER_ORDER;
     layerGroups.localPlan.add(line);
   }
+  renderLocalPlanMarkers(path);
+}
+
+function renderLocalPlanMarkers(path) {
+  if (!Array.isArray(path) || path.length === 0) {
+    return;
+  }
+  const geometry = new THREE.BufferGeometry().setFromPoints(path.map(worldToThree));
+  const markers = new THREE.Points(geometry, materials.localPlanMarker);
+  markers.renderOrder = LOCAL_PLAN_RENDER_ORDER;
+  layerGroups.localPlan.add(markers);
 }
 
 function renderExecutedPath(path) {

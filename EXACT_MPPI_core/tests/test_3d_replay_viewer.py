@@ -84,6 +84,16 @@ def test_static_3d_replay_viewer_renders_obstacle_geometry_from_scene_data():
     assert "obstacleGeometry" in app_js
 
 
+def test_static_3d_replay_viewer_highlights_local_plan_layer():
+    viewer_files = resources.files("exact_mppi.replay_viewer_3d")
+    app_js = viewer_files.joinpath("app.js").read_text(encoding="utf-8")
+
+    assert "LOCAL_PLAN_RENDER_ORDER" in app_js
+    assert "localPlanMarker" in app_js
+    assert "renderLocalPlanMarkers" in app_js
+    assert "depthTest: false" in app_js
+
+
 def test_static_3d_replay_viewer_uses_stable_layer_colors_and_heading_marker():
     viewer_files = resources.files("exact_mppi.replay_viewer_3d")
     app_js = viewer_files.joinpath("app.js").read_text(encoding="utf-8")

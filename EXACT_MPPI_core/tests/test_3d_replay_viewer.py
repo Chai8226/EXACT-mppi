@@ -96,6 +96,17 @@ def test_static_3d_replay_viewer_renders_dynamic_observed_cloud_from_frame_data(
     assert "renderObservedPointCloud" in app_js
     assert "observedCloud" in app_js
     assert "replay.scene.obstacle_points" not in app_js
+    assert "renderObservedPointCloud(fromFrame.observed_point_cloud)" in app_js
+
+
+def test_static_3d_replay_viewer_validates_new_replay_schema():
+    viewer_files = resources.files("exact_mppi.replay_viewer_3d")
+    app_js = viewer_files.joinpath("app.js").read_text(encoding="utf-8")
+
+    assert "candidate.scene.obstacle_points" in app_js
+    assert "candidate.scene.obstacle_geometry" in app_js
+    assert "observed_point_cloud" in app_js
+    assert "Replay scene uses obsolete obstacle_points" in app_js
 
 
 def test_static_3d_replay_viewer_highlights_local_plan_layer():
@@ -153,3 +164,5 @@ def test_static_3d_replay_viewer_documents_manual_smoke_check():
     assert "--replay-rollouts" in readme
     assert "index.html" in readme
     assert "narrow_gap_t_volume_3d" in readme
+    assert "Observed cloud" in readme
+    assert "obstacle points" not in readme

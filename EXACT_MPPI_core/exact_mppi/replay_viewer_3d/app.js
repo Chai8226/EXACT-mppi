@@ -188,6 +188,17 @@ function validateReplay(candidate) {
   if (!candidate.scene || !Array.isArray(candidate.frames)) {
     throw new Error("Replay requires scene and frames.");
   }
+  if (candidate.scene.obstacle_points !== undefined) {
+    throw new Error("Replay scene uses obsolete obstacle_points.");
+  }
+  if (!Array.isArray(candidate.scene.obstacle_geometry)) {
+    throw new Error("Replay scene requires obstacle_geometry.");
+  }
+  for (const frame of candidate.frames) {
+    if (!Array.isArray(frame.observed_point_cloud)) {
+      throw new Error("Replay frames require observed_point_cloud.");
+    }
+  }
 }
 
 function togglePlayback() {
@@ -367,6 +378,7 @@ function renderInterpolatedDisplayState(fromFrame, toFrame, alpha) {
   const displayFrame = interpolateFrameState(fromFrame, toFrame, alpha);
   const displayPath = [...fromFrame.executed_path, displayFrame.state];
 
+  renderObservedPointCloud(fromFrame.observed_point_cloud);
   clearGroup(layerGroups.executed);
   renderExecutedPath(displayPath);
   clearGroup(layerGroups.robot);

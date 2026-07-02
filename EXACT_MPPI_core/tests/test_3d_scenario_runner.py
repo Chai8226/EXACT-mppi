@@ -4,15 +4,19 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+import exact_mppi.scenario_runner_3d as scenario_runner_3d
 from exact_mppi.mppi_3d import BoxUnionVolume3D
 from exact_mppi.scenario_runner_3d import (
     STATIC_3D_SCENARIOS,
+    ScenarioRunResult3D,
+    build_3d_baseline_report,
     build_3d_replay_data,
     compute_3d_smoothness_telemetry,
     load_builtin_scenario_config,
     run_3d_scenario,
     run_3d_static_scenario_suite,
     transfer_from_global_to_local_frame,
+    write_3d_baseline_replay_artifacts,
     write_3d_replay_json,
 )
 
@@ -194,6 +198,132 @@ def test_static_3d_scenario_suite_runs_all_static_scenarios():
     assert [result.scenario for result in results] == list(STATIC_3D_SCENARIOS)
     for result in results:
         assert_standard_summary(result.summary, result.scenario)
+
+    report = build_3d_baseline_report(results)
+
+    assert report["kind"] == "3d_static_scenario_baseline"
+    assert report["aggregate"]["scenario_count"] == len(STATIC_3D_SCENARIOS)
+    assert report["aggregate"]["pass_count"] + report["aggregate"]["fail_count"] == len(
+        STATIC_3D_SCENARIOS
+    )
+    assert report["aggregate"]["failed_scenarios"] == [
+        scenario["scenario"]
+        for scenario in report["scenarios"]
+        if scenario["status"] == "fail"
+    ]
+    assert "needs_followup_tuning_scenarios" in report["aggregate"]
+    for scenario in report["scenarios"]:
+        assert_standard_summary(scenario, scenario["scenario"])
+        assert scenario["status"] in ("pass", "fail")
+        assert isinstance(scenario["needs_followup_tuning"], bool)
+        assert isinstance(scenario["followup_tuning_reasons"], list)
+
+
+def test_3d_baseline_report_identifies_followup_tuning_reasons():
+    passing = make_minimal_result(
+        "open_track_3d",
+        reached_goal=True,
+        collided=False,
+        final_distance=0.1,
+        command_delta=0.2,
+        trajectory_bend=0.05,
+    )
+    missed = make_minimal_result(
+        "t_shape_trap_3d",
+        reached_goal=False,
+        collided=False,
+        final_distance=2.0,
+        command_delta=1.0,
+        trajectory_bend=0.4,
+    )
+    collided = make_minimal_result(
+        "cluttered_corridor_3d",
+        reached_goal=True,
+        collided=True,
+        final_distance=0.2,
+        command_delta=0.2,
+        trajectory_bend=0.05,
+    )
+
+    report = build_3d_baseline_report([passing, missed, collided])
+
+    assert report["aggregate"]["pass_count"] == 1
+    assert report["aggregate"]["fail_count"] == 2
+    assert report["aggregate"]["missed_goal_scenarios"] == ["t_shape_trap_3d"]
+    assert report["aggregate"]["collided_scenarios"] == ["cluttered_corridor_3d"]
+    assert "t_shape_trap_3d" in report["aggregate"]["poor_smoothness_scenarios"]
+    assert report["aggregate"]["needs_followup_tuning_scenarios"] == [
+        "t_shape_trap_3d",
+        "cluttered_corridor_3d",
+    ]
+    trap = report["scenarios"][1]
+    assert trap["status"] == "fail"
+    assert trap["followup_tuning_reasons"] == [
+        "missed_goal",
+        "poor_command_smoothness",
+        "poor_trajectory_smoothness",
+    ]
+
+
+def test_3d_baseline_replay_artifacts_can_be_written(tmp_path):
+    result = run_3d_scenario(load_builtin_scenario_config("open_track_3d"))
+
+    artifacts = write_3d_baseline_replay_artifacts([result], tmp_path)
+
+    assert artifacts == {
+        "open_track_3d": str(tmp_path / "open_track_3d.replay.json")
+    }
+    replay = json.loads(
+        (tmp_path / "open_track_3d.replay.json").read_text(encoding="utf-8")
+    )
+    assert_replay_scene(replay, result)
+    assert_replay_frames(replay, result, require_clearance=False)
+
+
+def test_all_static_cli_writes_baseline_report_and_replay_artifacts(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        scenario_runner_3d,
+        "run_3d_static_scenario_suite",
+        lambda **_: [
+            make_minimal_result(
+                "open_track_3d",
+                reached_goal=True,
+                collided=False,
+                final_distance=0.1,
+            ),
+            make_minimal_result(
+                "t_shape_trap_3d",
+                reached_goal=False,
+                collided=False,
+                final_distance=2.0,
+            ),
+        ],
+    )
+    report_path = tmp_path / "baseline.json"
+    replay_dir = tmp_path / "replays"
+
+    exit_code = scenario_runner_3d.main(
+        [
+            "--all-static",
+            "--summary-json",
+            str(report_path),
+            "--replay-dir",
+            str(replay_dir),
+        ]
+    )
+
+    assert exit_code == 0
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["aggregate"]["scenario_count"] == 2
+    assert report["aggregate"]["failed_scenarios"] == ["t_shape_trap_3d"]
+    assert report["scenarios"][0]["replay_json"] == str(
+        replay_dir / "open_track_3d.replay.json"
+    )
+    assert (replay_dir / "open_track_3d.replay.json").is_file()
+    assert (replay_dir / "t_shape_trap_3d.replay.json").is_file()
 
 
 def test_static_3d_scenario_suite_configs_do_not_define_dynamic_obstacles():
@@ -395,3 +525,62 @@ def assert_t_volume_has_nonconvex_notch(robot_volume_config):
     assert stem_inside < 0.0
     assert crossbar_inside < 0.0
     assert notch_outside > 0.0
+
+
+def make_minimal_result(
+    scenario,
+    *,
+    reached_goal,
+    collided,
+    final_distance,
+    command_delta=0.1,
+    trajectory_bend=0.0,
+):
+    command_history = np.asarray(
+        [
+            [0.0, 0.0, 0.0, 0.0],
+            [command_delta, 0.0, 0.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    state_history = np.asarray(
+        [
+            [0.0, 0.0, 0.0, 0.0],
+            [0.5, 0.0, 0.0, 0.0],
+            [1.0 + trajectory_bend, 0.0, 0.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    local_plan_history = np.asarray(
+        [
+            [[0.0, 0.0, 0.0, 0.0], [0.5, 0.0, 0.0, 0.0]],
+            [[0.5, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+        ],
+        dtype=np.float32,
+    )
+    return ScenarioRunResult3D(
+        scenario=scenario,
+        reached_goal=reached_goal,
+        collided=collided,
+        final_distance=final_distance,
+        minimum_clearance=None,
+        step_count=2,
+        final_state=state_history[-1],
+        state_history=state_history,
+        command_history=command_history,
+        local_plan_history=local_plan_history,
+        optimal_trajectory_history=local_plan_history,
+        rollout_history=[],
+        clearance_history=[None, None, None],
+        global_reference_path=np.asarray(
+            [[0.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+            dtype=np.float32,
+        ),
+        global_obstacle_points=np.empty((0, 3), dtype=np.float32),
+        robot_volume_config=[
+            {
+                "center": [0.0, 0.0, 0.0],
+                "size": [0.4, 0.3, 0.2],
+            }
+        ],
+    )

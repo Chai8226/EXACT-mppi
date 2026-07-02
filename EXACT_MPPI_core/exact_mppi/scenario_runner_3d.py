@@ -30,6 +30,9 @@ STATIC_3D_SCENARIOS = (
     "t_shape_trap_3d",
     "cluttered_corridor_3d",
 )
+BASELINE_SMOOTHNESS_REFERENCE_SCENARIO = "open_track_3d"
+BASELINE_SMOOTHNESS_MULTIPLIER = 2.0
+BASELINE_SMOOTHNESS_EPSILON = 1e-6
 
 
 @dataclass(frozen=True)
@@ -80,9 +83,130 @@ def load_scenario_config(path: str | Path) -> dict[str, Any]:
 
 def run_3d_static_scenario_suite(
     scenario_names: list[str] | tuple[str, ...] | None = None,
+    *,
+    collect_rollouts: bool = False,
+    max_rollouts: int = 8,
 ) -> list[ScenarioRunResult3D]:
     names = STATIC_3D_SCENARIOS if scenario_names is None else tuple(scenario_names)
-    return [run_3d_scenario(load_builtin_scenario_config(name)) for name in names]
+    return [
+        run_3d_scenario(
+            load_builtin_scenario_config(name),
+            collect_rollouts=collect_rollouts,
+            max_rollouts=max_rollouts,
+        )
+        for name in names
+    ]
+
+
+def build_3d_baseline_report(
+    results: list[ScenarioRunResult3D] | tuple[ScenarioRunResult3D, ...],
+    *,
+    replay_artifacts: Mapping[str, str] | None = None,
+    smoothness_multiplier: float = BASELINE_SMOOTHNESS_MULTIPLIER,
+) -> dict[str, Any]:
+    scenario_reports = []
+    passed_scenarios = []
+    failed_scenarios = []
+    collided_scenarios = []
+    missed_goal_scenarios = []
+    poor_smoothness_scenarios = []
+    needs_followup_tuning_scenarios = []
+
+    reference = _baseline_smoothness_reference(results)
+    command_limit = _baseline_command_smoothness_limit(
+        reference,
+        smoothness_multiplier=smoothness_multiplier,
+    )
+    trajectory_limit = _baseline_trajectory_smoothness_limit(
+        reference,
+        smoothness_multiplier=smoothness_multiplier,
+    )
+
+    for result in results:
+        summary = copy.deepcopy(result.summary)
+        scenario_name = result.scenario
+        status = "pass" if result.reached_goal and not result.collided else "fail"
+        reasons = []
+        if not result.reached_goal:
+            reasons.append("missed_goal")
+        if result.collided:
+            reasons.append("collision")
+        if _baseline_command_smoothness_value(result) > command_limit:
+            reasons.append("poor_command_smoothness")
+        if _baseline_trajectory_smoothness_value(result) > trajectory_limit:
+            reasons.append("poor_trajectory_smoothness")
+
+        if status == "pass":
+            passed_scenarios.append(scenario_name)
+        else:
+            failed_scenarios.append(scenario_name)
+        if result.collided:
+            collided_scenarios.append(scenario_name)
+        if not result.reached_goal:
+            missed_goal_scenarios.append(scenario_name)
+        if (
+            "poor_command_smoothness" in reasons
+            or "poor_trajectory_smoothness" in reasons
+        ):
+            poor_smoothness_scenarios.append(scenario_name)
+        if reasons:
+            needs_followup_tuning_scenarios.append(scenario_name)
+
+        summary["status"] = status
+        summary["needs_followup_tuning"] = bool(reasons)
+        summary["followup_tuning_reasons"] = reasons
+        if replay_artifacts is not None and scenario_name in replay_artifacts:
+            summary["replay_json"] = replay_artifacts[scenario_name]
+        scenario_reports.append(summary)
+
+    return {
+        "schema_version": 1,
+        "kind": "3d_static_scenario_baseline",
+        "smoothness_reference": {
+            "scenario": reference.scenario if reference is not None else None,
+            "multiplier": smoothness_multiplier,
+            "command_max_delta_norm_limit": command_limit,
+            "trajectory_max_second_difference_norm_limit": trajectory_limit,
+        },
+        "aggregate": {
+            "scenario_count": len(scenario_reports),
+            "pass_count": len(passed_scenarios),
+            "fail_count": len(failed_scenarios),
+            "collision_count": len(collided_scenarios),
+            "missed_goal_count": len(missed_goal_scenarios),
+            "poor_smoothness_count": len(poor_smoothness_scenarios),
+            "needs_followup_tuning_count": len(needs_followup_tuning_scenarios),
+            "passed_scenarios": passed_scenarios,
+            "failed_scenarios": failed_scenarios,
+            "collided_scenarios": collided_scenarios,
+            "missed_goal_scenarios": missed_goal_scenarios,
+            "poor_smoothness_scenarios": poor_smoothness_scenarios,
+            "needs_followup_tuning_scenarios": needs_followup_tuning_scenarios,
+        },
+        "scenarios": scenario_reports,
+    }
+
+
+def write_3d_baseline_replay_artifacts(
+    results: list[ScenarioRunResult3D] | tuple[ScenarioRunResult3D, ...],
+    directory: str | Path,
+    *,
+    include_rollouts: bool = False,
+    max_rollouts: int = 8,
+) -> dict[str, str]:
+    replay_dir = Path(directory)
+    replay_dir.mkdir(parents=True, exist_ok=True)
+    artifacts = {}
+    for result in results:
+        replay_path = replay_dir / f"{result.scenario}.replay.json"
+        write_3d_replay_json(
+            result,
+            replay_path,
+            include_rollouts=include_rollouts,
+            max_rollouts=max_rollouts,
+        )
+        artifacts[result.scenario] = str(replay_path)
+    return artifacts
 
 
 def run_3d_scenario(
@@ -288,6 +412,53 @@ def write_3d_replay_json(
     replay_path = Path(path)
     replay_path.parent.mkdir(parents=True, exist_ok=True)
     replay_path.write_text(replay_json + "\n", encoding="utf-8")
+
+
+def _baseline_smoothness_reference(
+    results: list[ScenarioRunResult3D] | tuple[ScenarioRunResult3D, ...],
+) -> ScenarioRunResult3D | None:
+    if not results:
+        return None
+    for result in results:
+        if result.scenario == BASELINE_SMOOTHNESS_REFERENCE_SCENARIO:
+            return result
+    return results[0]
+
+
+def _baseline_command_smoothness_limit(
+    reference: ScenarioRunResult3D | None,
+    *,
+    smoothness_multiplier: float,
+) -> float:
+    if reference is None:
+        return 0.0
+    return max(
+        _baseline_command_smoothness_value(reference) * smoothness_multiplier,
+        BASELINE_SMOOTHNESS_EPSILON,
+    )
+
+
+def _baseline_trajectory_smoothness_limit(
+    reference: ScenarioRunResult3D | None,
+    *,
+    smoothness_multiplier: float,
+) -> float:
+    if reference is None:
+        return 0.0
+    return max(
+        _baseline_trajectory_smoothness_value(reference) * smoothness_multiplier,
+        BASELINE_SMOOTHNESS_EPSILON,
+    )
+
+
+def _baseline_command_smoothness_value(result: ScenarioRunResult3D) -> float:
+    return float(result.summary["command_smoothness"]["max_delta_norm"])
+
+
+def _baseline_trajectory_smoothness_value(result: ScenarioRunResult3D) -> float:
+    return float(
+        result.summary["trajectory_smoothness"]["max_second_difference_norm"]
+    )
 
 
 def compute_3d_smoothness_telemetry(
@@ -504,6 +675,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Write Offline Web replay JSON for the selected scenario.",
     )
     parser.add_argument(
+        "--replay-dir",
+        type=Path,
+        help="Write one Offline Web replay JSON per scenario when using --all-static.",
+    )
+    parser.add_argument(
         "--replay-rollouts",
         action="store_true",
         help="Include bounded sampled MPPI rollouts in replay JSON.",
@@ -518,11 +694,31 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_arg_parser().parse_args(argv)
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
+    if args.all_static and args.replay_json is not None:
+        parser.error("--replay-json is only supported for a selected scenario.")
+    if not args.all_static and args.replay_dir is not None:
+        parser.error("--replay-dir requires --all-static.")
+
     if args.all_static:
-        results = run_3d_static_scenario_suite()
-        summaries = [result.summary for result in results]
-        summary_json = json.dumps(summaries, allow_nan=False, sort_keys=True)
+        results = run_3d_static_scenario_suite(
+            collect_rollouts=args.replay_rollouts,
+            max_rollouts=args.replay_max_rollouts,
+        )
+        replay_artifacts = None
+        if args.replay_dir is not None:
+            replay_artifacts = write_3d_baseline_replay_artifacts(
+                results,
+                args.replay_dir,
+                include_rollouts=args.replay_rollouts,
+                max_rollouts=args.replay_max_rollouts,
+            )
+        baseline_report = build_3d_baseline_report(
+            results,
+            replay_artifacts=replay_artifacts,
+        )
+        summary_json = json.dumps(baseline_report, allow_nan=False, sort_keys=True)
         exit_ok = True
     else:
         config = (

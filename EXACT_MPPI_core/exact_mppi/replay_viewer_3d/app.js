@@ -26,6 +26,8 @@ const metrics = {
   goalDistance: document.getElementById("metric-goal-distance"),
   commandRms: document.getElementById("metric-command-rms"),
   trajectoryRms: document.getElementById("metric-trajectory-rms"),
+  cadence: document.getElementById("metric-cadence"),
+  display: document.getElementById("metric-display"),
 };
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -47,6 +49,7 @@ controls.enableDamping = true;
 controls.target.set(1.6, 0.2, 0);
 
 const LOCAL_PLAN_RENDER_ORDER = 30;
+const DISPLAY_FRAMES_PER_SECOND = 8;
 
 const layerGroups = {
   obstacles: new THREE.Group(),
@@ -171,6 +174,7 @@ function loadReplay(nextReplay) {
   renderObstacleGeometry(replay.scene.obstacle_geometry);
   renderObstaclePoints(replay.scene.obstacle_points);
   renderReferencePath(replay.scene.reference_path);
+  updateCadenceMetric();
   updateLayerVisibility();
   setFrame(0);
 }
@@ -192,9 +196,12 @@ function togglePlayback() {
   playToggle.textContent = playing ? "Pause" : "Play";
 }
 
-function setFrame(frameIndex) {
+function setFrame(frameIndex, { resetAccumulator = true } = {}) {
   if (!replay || replay.frames.length === 0) {
     return;
+  }
+  if (resetAccumulator) {
+    frameAccumulator = 0;
   }
   currentFrame = THREE.MathUtils.clamp(frameIndex, 0, replay.frames.length - 1);
   timeline.value = String(currentFrame);
@@ -317,10 +324,16 @@ function renderRobotVolume(robotVolume, frame) {
 }
 
 function renderFrameState(frame) {
+  renderExactFrameState(frame);
+}
+
+function renderExactFrameState(frame) {
   clearDynamicLayers();
   if (!replay || !frame) {
     metrics.scenario.textContent = "No replay";
     metrics.frame.textContent = "0 / 0";
+    metrics.cadence.textContent = "n/a";
+    metrics.display.textContent = "Exact frame";
     return;
   }
 
@@ -343,6 +356,51 @@ function renderFrameState(frame) {
     frame.smoothness_telemetry?.trajectory_smoothness
       ?.rms_second_difference_norm,
   );
+  metrics.display.textContent = "Exact frame";
+}
+
+function renderInterpolatedDisplayState(fromFrame, toFrame, alpha) {
+  const displayFrame = interpolateFrameState(fromFrame, toFrame, alpha);
+  const displayPath = [...fromFrame.executed_path, displayFrame.state];
+
+  clearGroup(layerGroups.executed);
+  renderExecutedPath(displayPath);
+  clearGroup(layerGroups.robot);
+  renderRobotVolume(replay.scene.robot_volume, displayFrame);
+  updateLayerVisibility();
+
+  metrics.display.textContent =
+    `Display interpolation ${Math.round(alpha * 100)}%`;
+}
+
+function interpolateFrameState(fromFrame, toFrame, alpha) {
+  return {
+    ...fromFrame,
+    state: [
+      lerp(fromFrame.state[0], toFrame.state[0], alpha),
+      lerp(fromFrame.state[1], toFrame.state[1], alpha),
+      lerp(fromFrame.state[2], toFrame.state[2], alpha),
+      interpolateYaw(fromFrame.state[3], toFrame.state[3], alpha),
+    ],
+  };
+}
+
+function interpolateYaw(fromYaw, toYaw, alpha) {
+  const delta = Math.atan2(Math.sin(toYaw - fromYaw), Math.cos(toYaw - fromYaw));
+  return fromYaw + delta * alpha;
+}
+
+function lerp(fromValue, toValue, alpha) {
+  return fromValue + (toValue - fromValue) * alpha;
+}
+
+function updateCadenceMetric() {
+  if (!replay) {
+    metrics.cadence.textContent = "n/a";
+    return;
+  }
+  metrics.cadence.textContent =
+    `${replay.frames.length} exported frames, display-only interpolation`;
 }
 
 function updateLayerVisibility() {
@@ -449,7 +507,8 @@ function animate(timestamp) {
   lastTick = timestamp;
 
   if (playing && replay?.frames.length > 0) {
-    frameAccumulator += deltaSeconds * Number(speedSelect.value) * 8;
+    frameAccumulator +=
+      deltaSeconds * Number(speedSelect.value) * DISPLAY_FRAMES_PER_SECOND;
     if (frameAccumulator >= 1) {
       const step = Math.floor(frameAccumulator);
       frameAccumulator -= step;
@@ -459,8 +518,16 @@ function animate(timestamp) {
         playToggle.textContent = "Play";
         setFrame(replay.frames.length - 1);
       } else {
-        setFrame(nextFrame);
+        setFrame(nextFrame, { resetAccumulator: false });
+        frameAccumulator = Math.min(frameAccumulator, 0.999);
       }
+    }
+    if (playing && currentFrame + 1 < replay.frames.length) {
+      renderInterpolatedDisplayState(
+        replay.frames[currentFrame],
+        replay.frames[currentFrame + 1],
+        frameAccumulator,
+      );
     }
   }
 

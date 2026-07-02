@@ -29,6 +29,8 @@ def test_static_3d_replay_viewer_exposes_replay_controls():
         'id="layer-rollouts"',
         'id="layer-robot"',
         'id="frame-state"',
+        'id="metric-cadence"',
+        'id="metric-display"',
     ):
         assert required_id in html
 
@@ -92,6 +94,18 @@ def test_static_3d_replay_viewer_highlights_local_plan_layer():
     assert "localPlanMarker" in app_js
     assert "renderLocalPlanMarkers" in app_js
     assert "depthTest: false" in app_js
+
+
+def test_static_3d_replay_viewer_uses_display_only_interpolation():
+    viewer_files = resources.files("exact_mppi.replay_viewer_3d")
+    app_js = viewer_files.joinpath("app.js").read_text(encoding="utf-8")
+
+    assert "DISPLAY_FRAMES_PER_SECOND" in app_js
+    assert "interpolateFrameState" in app_js
+    assert "interpolateYaw" in app_js
+    assert "renderInterpolatedDisplayState" in app_js
+    assert "renderExactFrameState" in app_js
+    assert "Display interpolation" in app_js
 
 
 def test_static_3d_replay_viewer_renders_authoritative_robot_volume_without_heading_cone():

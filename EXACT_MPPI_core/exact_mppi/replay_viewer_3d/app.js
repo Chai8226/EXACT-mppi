@@ -8,7 +8,7 @@ const timeline = document.getElementById("timeline");
 const speedSelect = document.getElementById("speed");
 const cameraModeSelect = document.getElementById("camera-mode");
 const layerControls = {
-  obstacles: document.getElementById("layer-obstacles"),
+  observedCloud: document.getElementById("layer-observed-cloud"),
   obstacleGeometry: document.getElementById("layer-obstacle-geometry"),
   reference: document.getElementById("layer-reference"),
   localPlan: document.getElementById("layer-local-plan"),
@@ -52,7 +52,7 @@ const LOCAL_PLAN_RENDER_ORDER = 30;
 const DISPLAY_FRAMES_PER_SECOND = 8;
 
 const layerGroups = {
-  obstacles: new THREE.Group(),
+  observedCloud: new THREE.Group(),
   obstacleGeometry: new THREE.Group(),
   reference: new THREE.Group(),
   localPlan: new THREE.Group(),
@@ -64,7 +64,7 @@ const layerGroups = {
 scene.add(...Object.values(layerGroups));
 
 const layerColors = {
-  obstacles: 0xe05a47,
+  observedCloud: 0x4ee1ff,
   obstacleGeometry: 0xe05a47,
   obstacleGeometryEdges: 0x772f28,
   referencePath: 0x4aa3df,
@@ -77,7 +77,10 @@ const layerColors = {
 };
 
 const materials = {
-  obstacle: new THREE.PointsMaterial({ color: layerColors.obstacles, size: 0.055 }),
+  observedCloud: new THREE.PointsMaterial({
+    color: layerColors.observedCloud,
+    size: 0.055,
+  }),
   obstacleGeometry: new THREE.MeshStandardMaterial({
     color: layerColors.obstacleGeometry,
     roughness: 0.72,
@@ -172,7 +175,6 @@ function loadReplay(nextReplay) {
 
   clearAllLayers();
   renderObstacleGeometry(replay.scene.obstacle_geometry);
-  renderObstaclePoints(replay.scene.obstacle_points);
   renderReferencePath(replay.scene.reference_path);
   updateCadenceMetric();
   updateLayerVisibility();
@@ -209,12 +211,13 @@ function setFrame(frameIndex, { resetAccumulator = true } = {}) {
   applyCameraMode(cameraModeSelect.value);
 }
 
-function renderObstaclePoints(points) {
+function renderObservedPointCloud(points) {
+  clearGroup(layerGroups.observedCloud);
   if (!Array.isArray(points) || points.length === 0) {
     return;
   }
   const geometry = new THREE.BufferGeometry().setFromPoints(points.map(worldToThree));
-  layerGroups.obstacles.add(new THREE.Points(geometry, materials.obstacle));
+  layerGroups.observedCloud.add(new THREE.Points(geometry, materials.observedCloud));
 }
 
 function renderObstacleGeometry(obstacles) {
@@ -338,6 +341,7 @@ function renderExactFrameState(frame) {
   }
 
   renderLocalPlan(frame.reference_window ?? frame.local_plan);
+  renderObservedPointCloud(frame.observed_point_cloud);
   renderExecutedPath(frame.executed_path);
   renderOptimalTrajectory(frame.optimal_trajectory);
   renderRollouts(frame.rollouts);
@@ -474,6 +478,7 @@ function clearAllLayers() {
 }
 
 function clearDynamicLayers() {
+  clearGroup(layerGroups.observedCloud);
   clearGroup(layerGroups.localPlan);
   clearGroup(layerGroups.executed);
   clearGroup(layerGroups.optimal);

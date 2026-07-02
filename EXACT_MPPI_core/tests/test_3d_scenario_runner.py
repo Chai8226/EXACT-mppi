@@ -11,6 +11,7 @@ from exact_mppi.scenario_runner_3d import (
     ScenarioRunResult3D,
     build_3d_baseline_report,
     build_3d_replay_data,
+    build_mid360_like_observed_point_cloud,
     compute_3d_smoothness_telemetry,
     load_builtin_scenario_config,
     run_3d_scenario,
@@ -20,6 +21,130 @@ from exact_mppi.scenario_runner_3d import (
     write_3d_baseline_replay_artifacts,
     write_3d_replay_json,
 )
+
+
+def test_mid360_like_box_raycast_returns_empty_cloud_for_empty_scene():
+    observed = build_mid360_like_observed_point_cloud(
+        [],
+        np.asarray([0.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        {
+            "horizontal_samples": 4,
+            "vertical_samples": 3,
+        },
+    )
+
+    assert observed.shape == (0, 3)
+
+
+def test_mid360_like_box_raycast_respects_range_and_vertical_fov():
+    pose = np.asarray([0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    sensor = {
+        "min_range_m": 0.1,
+        "max_range_m": 1.0,
+        "horizontal_samples": 1,
+        "vertical_samples": 1,
+        "vertical_min_deg": 0.0,
+        "vertical_max_deg": 0.0,
+    }
+
+    in_range = build_mid360_like_observed_point_cloud(
+        [{"type": "box", "center": [0.75, 0.0, 0.0], "size": [0.2, 0.2, 0.2]}],
+        pose,
+        sensor,
+    )
+    too_far = build_mid360_like_observed_point_cloud(
+        [{"type": "box", "center": [1.3, 0.0, 0.0], "size": [0.2, 0.2, 0.2]}],
+        pose,
+        sensor,
+    )
+    too_near = build_mid360_like_observed_point_cloud(
+        [{"type": "box", "center": [0.05, 0.0, 0.0], "size": [0.04, 0.04, 0.04]}],
+        pose,
+        sensor,
+    )
+    above_fov = build_mid360_like_observed_point_cloud(
+        [{"type": "box", "center": [0.75, 0.0, 0.5], "size": [0.2, 0.2, 0.2]}],
+        pose,
+        sensor,
+    )
+    side_out_of_fov = build_mid360_like_observed_point_cloud(
+        [{"type": "box", "center": [0.0, 0.75, 0.0], "size": [0.2, 0.2, 0.2]}],
+        pose,
+        {
+            **sensor,
+            "horizontal_fov_deg": 30.0,
+        },
+    )
+
+    assert in_range.shape == (1, 3)
+    np.testing.assert_allclose(in_range[0], [0.65, 0.0, 0.0], atol=1e-6)
+    assert too_far.shape == (0, 3)
+    assert too_near.shape == (0, 3)
+    assert above_fov.shape == (0, 3)
+    assert side_out_of_fov.shape == (0, 3)
+
+
+def test_mid360_like_box_raycast_keeps_nearest_occluding_hit_per_ray():
+    observed = build_mid360_like_observed_point_cloud(
+        [
+            {"type": "box", "center": [0.7, 0.0, 0.0], "size": [0.2, 0.2, 0.2]},
+            {"type": "box", "center": [1.2, 0.0, 0.0], "size": [0.2, 0.2, 0.2]},
+        ],
+        np.asarray([0.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        {
+            "horizontal_samples": 1,
+            "vertical_samples": 1,
+            "vertical_min_deg": 0.0,
+            "vertical_max_deg": 0.0,
+        },
+    )
+
+    assert observed.shape == (1, 3)
+    np.testing.assert_allclose(observed[0], [0.6, 0.0, 0.0], atol=1e-6)
+
+
+def test_mid360_like_runner_feeds_robot_local_yaw_frame_observations(monkeypatch):
+    captured_obstacle_points = []
+
+    class FakeController:
+        def computeVelocityCommands(self, **kwargs):
+            captured_obstacle_points.append(
+                np.asarray(kwargs["obstacle_points"], dtype=np.float32)
+            )
+            return np.zeros(4, dtype=np.float32)
+
+        def getOptimalTrajectory(self):
+            return None
+
+    monkeypatch.setattr(
+        scenario_runner_3d,
+        "_build_controller",
+        lambda *_, **__: FakeController(),
+    )
+    config = make_mid360_tracer_bullet_config()
+
+    result = run_3d_scenario(config)
+    replay = build_3d_replay_data(result)
+
+    assert result.step_count == 1
+    assert len(captured_obstacle_points) == 1
+    assert captured_obstacle_points[0].shape == (1, 3)
+    np.testing.assert_allclose(
+        captured_obstacle_points[0][0],
+        [0.8, 0.0, 0.0],
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        result.observed_point_cloud_history[0],
+        [[1.0, 2.8, 0.0]],
+    )
+    assert replay["scene"]["obstacle_geometry"] == config["obstacles"]["geometry"]
+    assert "obstacle_points" not in replay["scene"]
+    np.testing.assert_allclose(
+        replay["frames"][0]["observed_point_cloud"],
+        [[1.0, 2.8, 0.0]],
+    )
+    json.dumps(replay, allow_nan=False)
 
 
 def test_open_track_3d_runs_headlessly_from_builtin_config():
@@ -135,7 +260,7 @@ def test_narrow_gap_t_volume_3d_exports_obstacle_geometry_separate_from_points()
     replay = build_3d_replay_data(result)
     scene = replay["scene"]
 
-    assert scene["obstacle_points"] == result.global_obstacle_points.tolist()
+    assert "obstacle_points" not in scene
     assert scene["obstacle_geometry"] == result.obstacle_geometry_config
     assert len(scene["obstacle_geometry"]) == 2
     for obstacle in scene["obstacle_geometry"]:
@@ -475,10 +600,11 @@ def assert_replay_scene(replay, result):
         "yaw_unit": "radians",
     }
     assert scene["reference_path"] == result.global_reference_path.tolist()
-    assert scene["obstacle_points"] == result.global_obstacle_points.tolist()
+    assert "obstacle_points" not in scene
     assert scene["obstacle_geometry"] == result.obstacle_geometry_config
     assert scene["robot_volume"]["type"] == "box_union"
     assert scene["robot_volume"]["boxes"] == result.robot_volume_config
+    assert scene["sensor"] == result.sensor_config
     assert replay["summary"] == result.summary
     json.dumps(replay, allow_nan=False)
 
@@ -498,6 +624,10 @@ def assert_replay_frames(replay, result, *, require_clearance):
         assert frame["command"] == result.command_history[frame_index].tolist()
         assert frame["reference_window"] == result.local_plan_history[frame_index].tolist()
         assert frame["local_plan"] == result.local_plan_history[frame_index].tolist()
+        assert (
+            frame["observed_point_cloud"]
+            == result.observed_point_cloud_history[frame_index].tolist()
+        )
         assert (
             frame["optimal_trajectory"]
             == result.optimal_trajectory_history[frame_index].tolist()
@@ -531,6 +661,7 @@ def assert_frame_arrays_are_finite(frame):
         "reference_window",
         "local_plan",
         "optimal_trajectory",
+        "observed_point_cloud",
     ):
         assert np.all(np.isfinite(np.asarray(frame[key], dtype=np.float32)))
     for rollout in frame.get("rollouts", []):
@@ -632,6 +763,10 @@ def make_minimal_result(
             dtype=np.float32,
         ),
         global_obstacle_points=np.empty((0, 3), dtype=np.float32),
+        observed_point_cloud_history=[
+            np.empty((0, 3), dtype=np.float32),
+            np.empty((0, 3), dtype=np.float32),
+        ],
         obstacle_geometry_config=[],
         robot_volume_config=[
             {
@@ -640,3 +775,56 @@ def make_minimal_result(
             }
         ],
     )
+
+
+def make_mid360_tracer_bullet_config():
+    return {
+        "name": "mid360_tracer_bullet",
+        "simulation": {
+            "model_dt": 0.1,
+            "max_steps": 1,
+            "goal_tolerance": 0.01,
+            "clearance_margin": 0.04,
+        },
+        "sensor": {
+            "type": "mid360_like",
+            "min_range_m": 0.1,
+            "max_range_m": 10.0,
+            "horizontal_fov_deg": 360.0,
+            "vertical_min_deg": 0.0,
+            "vertical_max_deg": 0.0,
+            "horizontal_samples": 1,
+            "vertical_samples": 1,
+        },
+        "robot_volume": {
+            "boxes": [
+                {
+                    "center": [0.0, 0.0, 0.0],
+                    "size": [0.35, 0.35, 0.35],
+                }
+            ]
+        },
+        "reference_path": {
+            "point_count": 2,
+            "waypoints": [
+                [1.0, 2.0, 0.0, np.pi / 2.0],
+                [1.0, 2.1, 0.0, np.pi / 2.0],
+            ],
+        },
+        "obstacles": {
+            "geometry": [
+                {
+                    "type": "box",
+                    "center": [1.0, 2.9, 0.0],
+                    "size": [0.2, 0.2, 0.2],
+                }
+            ],
+            "points": [
+                [99.0, 0.0, 0.0],
+            ],
+        },
+        "controller": {
+            "time_steps": 2,
+            "max_obs_num": 4,
+        },
+    }

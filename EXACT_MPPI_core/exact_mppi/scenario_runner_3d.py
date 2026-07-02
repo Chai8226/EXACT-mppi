@@ -53,8 +53,10 @@ class ScenarioRunResult3D:
     clearance_history: list[float | None]
     global_reference_path: np.ndarray
     global_obstacle_points: np.ndarray
+    observed_point_cloud_history: list[np.ndarray]
     obstacle_geometry_config: list[dict[str, Any]]
     robot_volume_config: list[dict[str, Any]]
+    sensor_config: dict[str, Any] | None = None
 
     @property
     def summary(self) -> dict[str, Any]:
@@ -224,8 +226,6 @@ def run_3d_scenario(
     max_steps = int(simulation.get("max_steps", 80))
     goal_tolerance = float(simulation.get("goal_tolerance", 0.28))
     clearance_margin = float(simulation.get("clearance_margin", 0.04))
-    observation_range = float(simulation.get("observation_range", 1.7))
-    max_obstacle_points = int(simulation.get("max_obstacle_points", 48))
     reference_window_lookahead_distance = float(
         simulation.get(
             "reference_window_lookahead_distance",
@@ -239,13 +239,14 @@ def run_3d_scenario(
     obstacle_config = cfg.get("obstacles", {})
     obstacle_points = _build_obstacle_points(obstacle_config)
     obstacle_geometry_config = _build_obstacle_geometry_config(obstacle_config)
+    sensor_config = _build_sensor_config(cfg.get("sensor"))
     controller_config = dict(cfg.get("controller", {}))
     if collect_rollouts:
         controller_config["debug"] = True
     controller = _build_controller(
         controller_config,
         model_dt=model_dt,
-        max_obstacle_points=max_obstacle_points,
+        max_obstacle_points=int(simulation.get("max_obstacle_points", 48)),
         robot_volume_config=robot_volume_config,
         clearance_margin=clearance_margin,
     )
@@ -259,6 +260,7 @@ def run_3d_scenario(
     local_plan_history = []
     optimal_trajectory_history = []
     rollout_history = []
+    observed_point_cloud_history = []
     minimum_clearance = _minimum_state_clearance(
         robot_volume,
         obstacle_points,
@@ -275,12 +277,18 @@ def run_3d_scenario(
         )
         local_plan = transfer_from_global_to_local_frame(global_plan, state)
         local_goal = transfer_from_global_to_local_frame(goal[None, :], state)[0]
-        local_obstacles = build_range_based_local_observation(
-            obstacle_points,
-            state,
-            observation_range=observation_range,
-            max_points=max_obstacle_points,
+        observed_point_cloud = _build_observed_point_cloud_for_step(
+            sensor_config=sensor_config,
+            obstacle_geometry_config=obstacle_geometry_config,
+            legacy_obstacle_points=obstacle_points,
+            robot_pose=state,
+            legacy_observation_range=float(simulation.get("observation_range", 1.7)),
+            legacy_max_points=int(simulation.get("max_obstacle_points", 48)),
         )
+        local_obstacles = transfer_from_global_to_local_frame(
+            observed_point_cloud,
+            state,
+        ).astype(np.float32)
 
         command = controller.computeVelocityCommands(
             robot_pose=np.zeros(4, dtype=np.float32),
@@ -313,6 +321,7 @@ def run_3d_scenario(
         command_history.append(command.copy())
         local_plan_history.append(global_plan.copy())
         optimal_trajectory_history.append(global_optimal_trajectory.copy())
+        observed_point_cloud_history.append(observed_point_cloud.copy())
         if collect_rollouts:
             rollout_history.append(global_rollouts.copy())
 
@@ -348,8 +357,10 @@ def run_3d_scenario(
         clearance_history=clearance_history,
         global_reference_path=reference_path,
         global_obstacle_points=obstacle_points,
+        observed_point_cloud_history=observed_point_cloud_history,
         obstacle_geometry_config=obstacle_geometry_config,
         robot_volume_config=robot_volume_config,
+        sensor_config=sensor_config,
     )
 
 
@@ -372,6 +383,7 @@ def build_3d_replay_data(
             "reference_window": result.local_plan_history[idx].tolist(),
             "local_plan": result.local_plan_history[idx].tolist(),
             "optimal_trajectory": result.optimal_trajectory_history[idx].tolist(),
+            "observed_point_cloud": result.observed_point_cloud_history[idx].tolist(),
             "command": command.tolist(),
             "clearance": result.clearance_history[idx + 1],
             "goal_distance": float(np.linalg.norm(state[:3] - goal[:3])),
@@ -400,12 +412,12 @@ def build_3d_replay_data(
                 "yaw_unit": "radians",
             },
             "reference_path": result.global_reference_path.tolist(),
-            "obstacle_points": result.global_obstacle_points.tolist(),
             "obstacle_geometry": result.obstacle_geometry_config,
             "robot_volume": {
                 "type": "box_union",
                 "boxes": result.robot_volume_config,
             },
+            "sensor": result.sensor_config,
         },
         "frames": frames,
     }
@@ -527,6 +539,229 @@ def compute_3d_smoothness_telemetry(
             total_name="total_second_difference_norm",
         ),
     }
+
+
+def build_mid360_like_observed_point_cloud(
+    obstacle_geometry_config: list[dict[str, Any]],
+    robot_pose: np.ndarray,
+    sensor_config: Mapping[str, Any] | None = None,
+) -> np.ndarray:
+    """Raycast axis-aligned box geometry into a world-frame observed cloud."""
+
+    sensor = _build_sensor_config({} if sensor_config is None else sensor_config)
+    if not obstacle_geometry_config:
+        return np.empty((0, 3), dtype=np.float32)
+
+    origin = np.asarray(robot_pose, dtype=np.float32).reshape(-1)[:3]
+    directions = _mid360_like_world_ray_directions(robot_pose, sensor)
+    hits = []
+    for direction in directions:
+        hit = _nearest_box_raycast_hit(
+            origin,
+            direction,
+            obstacle_geometry_config,
+            min_range_m=float(sensor["min_range_m"]),
+            max_range_m=float(sensor["max_range_m"]),
+        )
+        if hit is not None:
+            hits.append(hit)
+
+    if not hits:
+        return np.empty((0, 3), dtype=np.float32)
+    return np.asarray(hits, dtype=np.float32).reshape((-1, 3))
+
+
+def _build_observed_point_cloud_for_step(
+    *,
+    sensor_config: dict[str, Any] | None,
+    obstacle_geometry_config: list[dict[str, Any]],
+    legacy_obstacle_points: np.ndarray,
+    robot_pose: np.ndarray,
+    legacy_observation_range: float,
+    legacy_max_points: int,
+) -> np.ndarray:
+    if sensor_config is not None:
+        return build_mid360_like_observed_point_cloud(
+            obstacle_geometry_config,
+            robot_pose,
+            sensor_config,
+        )
+
+    local_legacy_points = build_range_based_local_observation(
+        legacy_obstacle_points,
+        robot_pose,
+        observation_range=legacy_observation_range,
+        max_points=legacy_max_points,
+    )
+    return transfer_from_local_to_global_frame(local_legacy_points, robot_pose).astype(
+        np.float32
+    )
+
+
+def _build_sensor_config(config: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if config is None:
+        return None
+    sensor = dict(config)
+    sensor_type = str(sensor.get("type", "mid360_like"))
+    if sensor_type != "mid360_like":
+        raise ValueError(f"Unsupported 3D sensor type: {sensor_type}")
+
+    normalized = {
+        "type": "mid360_like",
+        "min_range_m": float(sensor.get("min_range_m", 0.1)),
+        "max_range_m": float(sensor.get("max_range_m", 10.0)),
+        "horizontal_fov_deg": float(sensor.get("horizontal_fov_deg", 360.0)),
+        "vertical_min_deg": float(sensor.get("vertical_min_deg", -7.0)),
+        "vertical_max_deg": float(sensor.get("vertical_max_deg", 52.0)),
+        "horizontal_samples": int(
+            sensor.get("horizontal_samples", sensor.get("horizontal_sample_count", 180))
+        ),
+        "vertical_samples": int(
+            sensor.get("vertical_samples", sensor.get("vertical_sample_count", 32))
+        ),
+        "noise_std_m": float(sensor.get("noise_std_m", 0.0)),
+        "dropout_probability": float(sensor.get("dropout_probability", 0.0)),
+        "seed": sensor.get("seed"),
+    }
+    if normalized["min_range_m"] < 0.0:
+        raise ValueError("sensor.min_range_m must be non-negative.")
+    if normalized["max_range_m"] <= normalized["min_range_m"]:
+        raise ValueError("sensor.max_range_m must be greater than min_range_m.")
+    if not 0.0 < normalized["horizontal_fov_deg"] <= 360.0:
+        raise ValueError("sensor.horizontal_fov_deg must be in (0, 360].")
+    if normalized["vertical_max_deg"] < normalized["vertical_min_deg"]:
+        raise ValueError("sensor.vertical_max_deg must be >= vertical_min_deg.")
+    if normalized["horizontal_samples"] <= 0:
+        raise ValueError("sensor.horizontal_samples must be positive.")
+    if normalized["vertical_samples"] <= 0:
+        raise ValueError("sensor.vertical_samples must be positive.")
+    if normalized["noise_std_m"] != 0.0:
+        raise ValueError("MID-360-like sensor noise is reserved but not implemented.")
+    if normalized["dropout_probability"] != 0.0:
+        raise ValueError("MID-360-like sensor dropout is reserved but not implemented.")
+    return normalized
+
+
+def _mid360_like_world_ray_directions(
+    robot_pose: np.ndarray,
+    sensor_config: Mapping[str, Any],
+) -> np.ndarray:
+    horizontal_angles = _sample_horizontal_angles(
+        fov_deg=float(sensor_config["horizontal_fov_deg"]),
+        sample_count=int(sensor_config["horizontal_samples"]),
+    )
+    vertical_angles = _sample_vertical_angles(
+        vertical_min_deg=float(sensor_config["vertical_min_deg"]),
+        vertical_max_deg=float(sensor_config["vertical_max_deg"]),
+        sample_count=int(sensor_config["vertical_samples"]),
+    )
+
+    local_directions = []
+    for vertical_angle in vertical_angles:
+        cos_elevation = np.cos(vertical_angle)
+        for horizontal_angle in horizontal_angles:
+            local_directions.append(
+                [
+                    cos_elevation * np.cos(horizontal_angle),
+                    cos_elevation * np.sin(horizontal_angle),
+                    np.sin(vertical_angle),
+                ]
+            )
+    local_directions = np.asarray(local_directions, dtype=np.float32)
+
+    pose = np.asarray(robot_pose, dtype=np.float32).reshape(-1)
+    c = np.cos(pose[3])
+    s = np.sin(pose[3])
+    rotation_local_to_global = np.array([[c, s], [-s, c]], dtype=np.float32)
+    world_directions = local_directions.copy()
+    world_directions[:, :2] = world_directions[:, :2] @ rotation_local_to_global
+    return world_directions.astype(np.float32)
+
+
+def _sample_horizontal_angles(*, fov_deg: float, sample_count: int) -> np.ndarray:
+    if sample_count == 1:
+        return np.asarray([0.0], dtype=np.float32)
+    fov = np.deg2rad(fov_deg)
+    if np.isclose(fov_deg, 360.0):
+        return np.linspace(0.0, fov, sample_count, endpoint=False, dtype=np.float32)
+    return np.linspace(-0.5 * fov, 0.5 * fov, sample_count, dtype=np.float32)
+
+
+def _sample_vertical_angles(
+    *,
+    vertical_min_deg: float,
+    vertical_max_deg: float,
+    sample_count: int,
+) -> np.ndarray:
+    if sample_count == 1:
+        midpoint = 0.5 * (vertical_min_deg + vertical_max_deg)
+        return np.asarray([np.deg2rad(midpoint)], dtype=np.float32)
+    return np.linspace(
+        np.deg2rad(vertical_min_deg),
+        np.deg2rad(vertical_max_deg),
+        sample_count,
+        dtype=np.float32,
+    )
+
+
+def _nearest_box_raycast_hit(
+    origin: np.ndarray,
+    direction: np.ndarray,
+    obstacle_geometry_config: list[dict[str, Any]],
+    *,
+    min_range_m: float,
+    max_range_m: float,
+) -> np.ndarray | None:
+    nearest_t = np.inf
+    nearest_hit = None
+    for obstacle in obstacle_geometry_config:
+        hit_t = _ray_axis_aligned_box_intersection(
+            origin,
+            direction,
+            obstacle,
+        )
+        if hit_t is None or hit_t < min_range_m or hit_t > max_range_m:
+            continue
+        if hit_t < nearest_t:
+            nearest_t = hit_t
+            nearest_hit = origin + direction * hit_t
+    if nearest_hit is None:
+        return None
+    return nearest_hit.astype(np.float32)
+
+
+def _ray_axis_aligned_box_intersection(
+    origin: np.ndarray,
+    direction: np.ndarray,
+    obstacle: Mapping[str, Any],
+) -> float | None:
+    center = np.asarray(obstacle["center"], dtype=np.float32)
+    size = np.asarray(obstacle["size"], dtype=np.float32)
+    half_size = size * 0.5
+    bounds_min = center - half_size
+    bounds_max = center + half_size
+
+    t_min = -np.inf
+    t_max = np.inf
+    for axis in range(3):
+        ray_component = float(direction[axis])
+        if abs(ray_component) < 1e-8:
+            if origin[axis] < bounds_min[axis] or origin[axis] > bounds_max[axis]:
+                return None
+            continue
+        inv_d = 1.0 / ray_component
+        t1 = (bounds_min[axis] - origin[axis]) * inv_d
+        t2 = (bounds_max[axis] - origin[axis]) * inv_d
+        t_near = min(t1, t2)
+        t_far = max(t1, t2)
+        t_min = max(t_min, t_near)
+        t_max = min(t_max, t_far)
+        if t_min > t_max:
+            return None
+
+    if t_min < 0.0:
+        return None
+    return float(t_min)
 
 
 def build_range_based_local_observation(

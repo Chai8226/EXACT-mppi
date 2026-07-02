@@ -20,7 +20,7 @@ def test_static_3d_replay_viewer_exposes_replay_controls():
         'id="timeline"',
         'id="speed"',
         'id="camera-mode"',
-        'id="layer-obstacles"',
+        'id="layer-observed-cloud"',
         'id="layer-obstacle-geometry"',
         'id="layer-reference"',
         'id="layer-local-plan"',
@@ -54,7 +54,7 @@ def test_static_3d_replay_viewer_renders_core_replay_layers():
     app_js = viewer_files.joinpath("app.js").read_text(encoding="utf-8")
 
     for renderer_hook in (
-        "renderObstaclePoints",
+        "renderObservedPointCloud",
         "renderObstacleGeometry",
         "renderReferencePath",
         "renderLocalPlan",
@@ -88,6 +88,16 @@ def test_static_3d_replay_viewer_renders_obstacle_geometry_from_scene_data():
     assert "obstacleGeometry" in app_js
 
 
+def test_static_3d_replay_viewer_renders_dynamic_observed_cloud_from_frame_data():
+    viewer_files = resources.files("exact_mppi.replay_viewer_3d")
+    app_js = viewer_files.joinpath("app.js").read_text(encoding="utf-8")
+
+    assert "frame.observed_point_cloud" in app_js
+    assert "renderObservedPointCloud" in app_js
+    assert "observedCloud" in app_js
+    assert "replay.scene.obstacle_points" not in app_js
+
+
 def test_static_3d_replay_viewer_highlights_local_plan_layer():
     viewer_files = resources.files("exact_mppi.replay_viewer_3d")
     app_js = viewer_files.joinpath("app.js").read_text(encoding="utf-8")
@@ -117,6 +127,7 @@ def test_static_3d_replay_viewer_renders_authoritative_robot_volume_without_head
 
     for color_name in (
         "obstacles",
+        "observedCloud",
         "referencePath",
         "localPlan",
         "executedPath",

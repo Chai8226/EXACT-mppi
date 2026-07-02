@@ -42,12 +42,44 @@ body {
   right: 320px;
   min-height: 48px;
   display: grid;
-  grid-template-columns: minmax(180px, 280px) 80px minmax(180px, 1fr) 112px;
+  grid-template-columns:
+    minmax(170px, 250px) 76px minmax(170px, 1fr) 104px
+    118px;
   gap: 8px;
   align-items: center;
   padding: 8px;
   background: rgba(17, 20, 24, 0.86);
   border: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.layers {
+  position: absolute;
+  top: 76px;
+  left: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: min(720px, calc(100vw - 328px));
+  padding: 8px;
+  background: rgba(17, 20, 24, 0.84);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.layers label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 8px;
+  background: #20262d;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #dfe5e8;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.layers input {
+  accent-color: #55c2a3;
 }
 
 .file-control,
@@ -92,7 +124,7 @@ input[type="range"] {
 }
 
 select {
-  width: 58px;
+  width: 72px;
   border: 0;
   background: transparent;
   color: #edf0f2;
@@ -140,12 +172,18 @@ select {
 @media (max-width: 820px) {
   .toolbar {
     right: 12px;
-    grid-template-columns: 1fr 72px;
+    grid-template-columns: minmax(0, 1fr) 116px;
     grid-auto-rows: 32px;
   }
 
   #timeline {
     grid-column: 1 / -1;
+  }
+
+  .layers {
+    top: 128px;
+    right: 12px;
+    max-width: none;
   }
 
   .metrics {

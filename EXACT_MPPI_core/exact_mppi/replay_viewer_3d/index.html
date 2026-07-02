@@ -49,6 +49,25 @@
               <option value="4">4x</option>
             </select>
           </label>
+          <label class="select-control">
+            Camera
+            <select id="camera-mode">
+              <option value="free" selected>Free</option>
+              <option value="follow">Follow</option>
+              <option value="top">Top</option>
+              <option value="side">Side</option>
+              <option value="front">Front</option>
+            </select>
+          </label>
+        </div>
+        <div class="layers" aria-label="Layer toggles">
+          <label><input id="layer-obstacles" type="checkbox" checked />Obstacles</label>
+          <label><input id="layer-reference" type="checkbox" checked />Reference</label>
+          <label><input id="layer-local-plan" type="checkbox" checked />Local plan</label>
+          <label><input id="layer-executed" type="checkbox" checked />Executed</label>
+          <label><input id="layer-optimal" type="checkbox" checked />Optimal</label>
+          <label><input id="layer-rollouts" type="checkbox" checked />Rollouts</label>
+          <label><input id="layer-robot" type="checkbox" checked />Robot</label>
         </div>
         <aside class="metrics" aria-label="Frame metrics">
           <dl id="frame-state">

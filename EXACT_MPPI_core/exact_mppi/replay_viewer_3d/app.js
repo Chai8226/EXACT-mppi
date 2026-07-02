@@ -6,6 +6,16 @@ const fileInput = document.getElementById("replay-file");
 const playToggle = document.getElementById("play-toggle");
 const timeline = document.getElementById("timeline");
 const speedSelect = document.getElementById("speed");
+const cameraModeSelect = document.getElementById("camera-mode");
+const layerControls = {
+  obstacles: document.getElementById("layer-obstacles"),
+  reference: document.getElementById("layer-reference"),
+  localPlan: document.getElementById("layer-local-plan"),
+  executed: document.getElementById("layer-executed"),
+  optimal: document.getElementById("layer-optimal"),
+  rollouts: document.getElementById("layer-rollouts"),
+  robot: document.getElementById("layer-robot"),
+};
 
 const metrics = {
   scenario: document.getElementById("metric-scenario"),
@@ -35,24 +45,53 @@ const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.target.set(1.6, 0.2, 0);
 
-const staticGroup = new THREE.Group();
-const dynamicGroup = new THREE.Group();
-const robotGroup = new THREE.Group();
-scene.add(staticGroup, dynamicGroup, robotGroup);
+const layerGroups = {
+  obstacles: new THREE.Group(),
+  reference: new THREE.Group(),
+  localPlan: new THREE.Group(),
+  executed: new THREE.Group(),
+  optimal: new THREE.Group(),
+  rollouts: new THREE.Group(),
+  robot: new THREE.Group(),
+};
+scene.add(...Object.values(layerGroups));
+
+const layerColors = {
+  obstacles: 0xe05a47,
+  referencePath: 0x4aa3df,
+  localPlan: 0xb48cf2,
+  executedPath: 0x55c2a3,
+  optimalTrajectory: 0xf2c14e,
+  rollouts: 0x7d8790,
+  robotBody: 0xdce5ea,
+  robotHeading: 0xfff1a8,
+  robotEdges: 0x2b3036,
+};
 
 const materials = {
-  obstacle: new THREE.PointsMaterial({ color: 0xe05a47, size: 0.055 }),
-  reference: new THREE.LineBasicMaterial({ color: 0x4aa3df }),
-  executed: new THREE.LineBasicMaterial({ color: 0x55c2a3 }),
-  optimal: new THREE.LineBasicMaterial({ color: 0xf2c14e }),
+  obstacle: new THREE.PointsMaterial({ color: layerColors.obstacles, size: 0.055 }),
+  reference: new THREE.LineBasicMaterial({ color: layerColors.referencePath }),
+  localPlan: new THREE.LineBasicMaterial({ color: layerColors.localPlan }),
+  executed: new THREE.LineBasicMaterial({ color: layerColors.executedPath }),
+  optimal: new THREE.LineBasicMaterial({ color: layerColors.optimalTrajectory }),
+  rollouts: new THREE.LineBasicMaterial({
+    color: layerColors.rollouts,
+    transparent: true,
+    opacity: 0.26,
+  }),
   robot: new THREE.MeshStandardMaterial({
-    color: 0xdce5ea,
+    color: layerColors.robotBody,
     roughness: 0.7,
     metalness: 0.05,
     transparent: true,
     opacity: 0.82,
   }),
-  robotEdges: new THREE.LineBasicMaterial({ color: 0x2b3036 }),
+  robotHeading: new THREE.MeshStandardMaterial({
+    color: layerColors.robotHeading,
+    roughness: 0.5,
+    metalness: 0.05,
+  }),
+  robotEdges: new THREE.LineBasicMaterial({ color: layerColors.robotEdges }),
 };
 
 let replay = null;
@@ -66,10 +105,18 @@ playToggle.addEventListener("click", togglePlayback);
 timeline.addEventListener("input", () => {
   setFrame(Number(timeline.value));
 });
+cameraModeSelect.addEventListener("change", () => {
+  applyCameraMode(cameraModeSelect.value);
+});
+
+for (const control of Object.values(layerControls)) {
+  control.addEventListener("change", updateLayerVisibility);
+}
 
 window.addEventListener("resize", resize);
 resize();
 renderFrameState(null);
+updateLayerVisibility();
 animate(0);
 
 function handleReplayFile(event) {
@@ -97,9 +144,10 @@ function loadReplay(nextReplay) {
   timeline.max = String(Math.max(replay.frames.length - 1, 0));
   timeline.value = "0";
 
-  clearGroup(staticGroup);
+  clearAllLayers();
   renderObstaclePoints(replay.scene.obstacle_points);
   renderReferencePath(replay.scene.reference_path);
+  updateLayerVisibility();
   setFrame(0);
 }
 
@@ -127,6 +175,7 @@ function setFrame(frameIndex) {
   currentFrame = THREE.MathUtils.clamp(frameIndex, 0, replay.frames.length - 1);
   timeline.value = String(currentFrame);
   renderFrameState(replay.frames[currentFrame]);
+  applyCameraMode(cameraModeSelect.value);
 }
 
 function renderObstaclePoints(points) {
@@ -134,39 +183,58 @@ function renderObstaclePoints(points) {
     return;
   }
   const geometry = new THREE.BufferGeometry().setFromPoints(points.map(worldToThree));
-  staticGroup.add(new THREE.Points(geometry, materials.obstacle));
+  layerGroups.obstacles.add(new THREE.Points(geometry, materials.obstacle));
 }
 
 function renderReferencePath(path) {
   const line = makeLine(path, materials.reference);
   if (line) {
-    staticGroup.add(line);
+    layerGroups.reference.add(line);
+  }
+}
+
+function renderLocalPlan(path) {
+  const line = makeLine(path, materials.localPlan);
+  if (line) {
+    layerGroups.localPlan.add(line);
   }
 }
 
 function renderExecutedPath(path) {
   const line = makeLine(path, materials.executed);
   if (line) {
-    dynamicGroup.add(line);
+    layerGroups.executed.add(line);
   }
 }
 
 function renderOptimalTrajectory(path) {
   const line = makeLine(path, materials.optimal);
   if (line) {
-    dynamicGroup.add(line);
+    layerGroups.optimal.add(line);
+  }
+}
+
+function renderRollouts(rollouts) {
+  if (!Array.isArray(rollouts)) {
+    return;
+  }
+  for (const rollout of rollouts) {
+    const line = makeLine(rollout, materials.rollouts);
+    if (line) {
+      layerGroups.rollouts.add(line);
+    }
   }
 }
 
 function renderRobotVolume(robotVolume, frame) {
-  clearGroup(robotGroup);
+  clearGroup(layerGroups.robot);
   if (!robotVolume || !Array.isArray(robotVolume.boxes) || !frame) {
     return;
   }
 
   const state = frame.state;
-  robotGroup.position.copy(worldToThree(state));
-  robotGroup.rotation.set(0, -state[3], 0);
+  layerGroups.robot.position.copy(worldToThree(state));
+  layerGroups.robot.rotation.set(0, -state[3], 0);
 
   for (const box of robotVolume.boxes) {
     const size = box.size || box.half_extents?.map((v) => v * 2);
@@ -177,28 +245,37 @@ function renderRobotVolume(robotVolume, frame) {
     const geometry = new THREE.BoxGeometry(size[0], size[2], size[1]);
     const mesh = new THREE.Mesh(geometry, materials.robot);
     mesh.position.copy(worldToThree(center));
-    robotGroup.add(mesh);
+    layerGroups.robot.add(mesh);
 
     const edges = new THREE.LineSegments(
       new THREE.EdgesGeometry(geometry),
       materials.robotEdges,
     );
     edges.position.copy(mesh.position);
-    robotGroup.add(edges);
+    layerGroups.robot.add(edges);
   }
+
+  const headingGeometry = new THREE.ConeGeometry(0.09, 0.32, 16);
+  const heading = new THREE.Mesh(headingGeometry, materials.robotHeading);
+  heading.position.set(0.46, 0.0, 0.0);
+  heading.rotation.set(0, 0, -Math.PI / 2);
+  layerGroups.robot.add(heading);
 }
 
 function renderFrameState(frame) {
-  clearGroup(dynamicGroup);
+  clearDynamicLayers();
   if (!replay || !frame) {
     metrics.scenario.textContent = "No replay";
     metrics.frame.textContent = "0 / 0";
     return;
   }
 
+  renderLocalPlan(frame.local_plan);
   renderExecutedPath(frame.executed_path);
   renderOptimalTrajectory(frame.optimal_trajectory);
+  renderRollouts(frame.rollouts);
   renderRobotVolume(replay.scene.robot_volume, frame);
+  updateLayerVisibility();
 
   metrics.scenario.textContent = replay.scene.scenario;
   metrics.frame.textContent = `${frame.frame_index + 1} / ${replay.frames.length}`;
@@ -212,6 +289,50 @@ function renderFrameState(frame) {
     frame.smoothness_telemetry?.trajectory_smoothness
       ?.rms_second_difference_norm,
   );
+}
+
+function updateLayerVisibility() {
+  for (const [name, group] of Object.entries(layerGroups)) {
+    const control = layerControls[name];
+    if (control) {
+      group.visible = control.checked;
+    }
+  }
+}
+
+function applyCameraMode(mode) {
+  if (!replay || replay.frames.length === 0 || mode === "free") {
+    controls.enabled = true;
+    return;
+  }
+
+  const state = replay.frames[currentFrame].state;
+  const target = worldToThree(state);
+  controls.target.copy(target);
+  controls.enabled = mode !== "follow";
+
+  if (mode === "top") {
+    camera.up.set(0, 0, -1);
+    camera.position.copy(target).add(new THREE.Vector3(0, 5.4, 0));
+  } else if (mode === "side") {
+    camera.up.set(0, 1, 0);
+    camera.position.copy(target).add(new THREE.Vector3(0, 1.2, 5.2));
+  } else if (mode === "front") {
+    camera.up.set(0, 1, 0);
+    camera.position.copy(target).add(new THREE.Vector3(5.2, 1.2, 0));
+  } else if (mode === "follow") {
+    camera.up.set(0, 1, 0);
+    const yaw = state[3];
+    const followWorldPosition = [
+      state[0] - Math.cos(yaw) * 2.2,
+      state[1] - Math.sin(yaw) * 2.2,
+      state[2] + 1.1,
+    ];
+    camera.position.copy(worldToThree(followWorldPosition));
+  }
+
+  camera.lookAt(target);
+  controls.update();
 }
 
 function makeLine(points, material) {
@@ -231,12 +352,21 @@ function clearGroup(group) {
     const child = group.children[0];
     group.remove(child);
     child.geometry?.dispose();
-    if (Array.isArray(child.material)) {
-      child.material.forEach((material) => material.dispose());
-    } else {
-      child.material?.dispose();
-    }
   }
+}
+
+function clearAllLayers() {
+  for (const group of Object.values(layerGroups)) {
+    clearGroup(group);
+  }
+}
+
+function clearDynamicLayers() {
+  clearGroup(layerGroups.localPlan);
+  clearGroup(layerGroups.executed);
+  clearGroup(layerGroups.optimal);
+  clearGroup(layerGroups.rollouts);
+  clearGroup(layerGroups.robot);
 }
 
 function formatScalar(value) {

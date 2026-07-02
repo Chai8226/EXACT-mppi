@@ -94,7 +94,7 @@ def test_static_3d_replay_viewer_highlights_local_plan_layer():
     assert "depthTest: false" in app_js
 
 
-def test_static_3d_replay_viewer_uses_stable_layer_colors_and_heading_marker():
+def test_static_3d_replay_viewer_renders_authoritative_robot_volume_without_heading_cone():
     viewer_files = resources.files("exact_mppi.replay_viewer_3d")
     app_js = viewer_files.joinpath("app.js").read_text(encoding="utf-8")
 
@@ -106,12 +106,15 @@ def test_static_3d_replay_viewer_uses_stable_layer_colors_and_heading_marker():
         "optimalTrajectory",
         "rollouts",
         "robotBody",
-        "robotHeading",
+        "robotEdges",
     ):
         assert color_name in app_js
 
-    assert "headingGeometry" in app_js
-    assert "ConeGeometry" in app_js
+    assert "replay.scene.robot_volume" in app_js
+    assert "BoxGeometry" in app_js
+    assert "EdgesGeometry" in app_js
+    assert "ConeGeometry" not in app_js
+    assert "robotHeading" not in app_js
 
 
 def test_static_3d_replay_viewer_documents_manual_smoke_check():

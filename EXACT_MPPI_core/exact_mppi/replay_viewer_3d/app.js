@@ -70,7 +70,6 @@ const layerColors = {
   optimalTrajectory: 0xf2c14e,
   rollouts: 0x7d8790,
   robotBody: 0xdce5ea,
-  robotHeading: 0xfff1a8,
   robotEdges: 0x2b3036,
 };
 
@@ -114,11 +113,6 @@ const materials = {
     metalness: 0.05,
     transparent: true,
     opacity: 0.82,
-  }),
-  robotHeading: new THREE.MeshStandardMaterial({
-    color: layerColors.robotHeading,
-    roughness: 0.5,
-    metalness: 0.05,
   }),
   robotEdges: new THREE.LineBasicMaterial({ color: layerColors.robotEdges }),
 };
@@ -320,11 +314,6 @@ function renderRobotVolume(robotVolume, frame) {
     layerGroups.robot.add(edges);
   }
 
-  const headingGeometry = new THREE.ConeGeometry(0.09, 0.32, 16);
-  const heading = new THREE.Mesh(headingGeometry, materials.robotHeading);
-  heading.position.set(0.46, 0.0, 0.0);
-  heading.rotation.set(0, 0, -Math.PI / 2);
-  layerGroups.robot.add(heading);
 }
 
 function renderFrameState(frame) {

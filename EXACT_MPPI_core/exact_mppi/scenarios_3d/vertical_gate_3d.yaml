@@ -1,13 +1,23 @@
 name: vertical_gate_3d
-description: Deterministic vertical-gate yaw-only 3D scenario with static obstacle points.
+description: Deterministic vertical-gate yaw-only 3D scenario with static obstacle geometry.
 
 simulation:
   model_dt: 0.15
   max_steps: 80
   goal_tolerance: 0.28
   clearance_margin: 0.04
-  observation_range: 1.8
-  max_obstacle_points: 64
+
+sensor:
+  type: mid360_like
+  min_range_m: 0.1
+  max_range_m: 10.0
+  horizontal_fov_deg: 360.0
+  vertical_min_deg: -7.0
+  vertical_max_deg: 52.0
+  horizontal_samples: 36
+  vertical_samples: 8
+  noise_std_m: 0.0
+  dropout_probability: 0.0
 
 robot_volume:
   boxes:
@@ -25,6 +35,16 @@ reference_path:
     - [3.2, 0.0, 0.0, 0.0]
 
 obstacles:
+  geometry:
+    - type: box
+      center: [1.65, -0.48, 0.20]
+      size: [0.80, 0.12, 0.40]
+    - type: box
+      center: [1.65, 0.48, 0.20]
+      size: [0.80, 0.12, 0.40]
+    - type: box
+      center: [1.65, 0.00, 0.98]
+      size: [0.50, 0.90, 0.12]
   points:
     - [1.35, -0.48, 0.20]
     - [1.55, -0.48, 0.20]
@@ -44,6 +64,7 @@ obstacles:
 
 controller:
   time_steps: 12
+  max_obs_num: 64
   batch_size: 64
   iteration_count: 2
   seed: 41

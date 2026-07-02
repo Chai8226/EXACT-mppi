@@ -6,9 +6,19 @@ simulation:
   max_steps: 80
   goal_tolerance: 0.28
   clearance_margin: 0.04
-  observation_range: 1.8
-  max_obstacle_points: 64
   reference_window_lookahead_distance: 1.2
+
+sensor:
+  type: mid360_like
+  min_range_m: 0.1
+  max_range_m: 10.0
+  horizontal_fov_deg: 360.0
+  vertical_min_deg: -7.0
+  vertical_max_deg: 52.0
+  horizontal_samples: 36
+  vertical_samples: 8
+  noise_std_m: 0.0
+  dropout_probability: 0.0
 
 robot_volume:
   type: box_union
@@ -55,6 +65,7 @@ obstacles:
 
 controller:
   time_steps: 12
+  max_obs_num: 64
   batch_size: 64
   iteration_count: 2
   seed: 31

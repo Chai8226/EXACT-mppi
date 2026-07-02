@@ -241,12 +241,24 @@ def run_3d_scenario(
     obstacle_geometry_config = _build_obstacle_geometry_config(obstacle_config)
     sensor_config = _build_sensor_config(cfg.get("sensor"))
     controller_config = dict(cfg.get("controller", {}))
+    legacy_observation_range = simulation.get("observation_range")
+    legacy_max_obstacle_points = simulation.get("max_obstacle_points")
+    controller_point_budget = _controller_point_budget(
+        controller_config,
+        sensor_config=sensor_config,
+        legacy_max_obstacle_points=legacy_max_obstacle_points,
+    )
+    _validate_observation_config(
+        sensor_config=sensor_config,
+        legacy_observation_range=legacy_observation_range,
+        legacy_max_obstacle_points=legacy_max_obstacle_points,
+    )
     if collect_rollouts:
         controller_config["debug"] = True
     controller = _build_controller(
         controller_config,
         model_dt=model_dt,
-        max_obstacle_points=int(simulation.get("max_obstacle_points", 48)),
+        controller_point_budget=controller_point_budget,
         robot_volume_config=robot_volume_config,
         clearance_margin=clearance_margin,
     )
@@ -282,8 +294,8 @@ def run_3d_scenario(
             obstacle_geometry_config=obstacle_geometry_config,
             legacy_obstacle_points=obstacle_points,
             robot_pose=state,
-            legacy_observation_range=float(simulation.get("observation_range", 1.7)),
-            legacy_max_points=int(simulation.get("max_obstacle_points", 48)),
+            legacy_observation_range=legacy_observation_range,
+            legacy_max_points=legacy_max_obstacle_points,
         )
         local_obstacles = transfer_from_global_to_local_frame(
             observed_point_cloud,
@@ -577,8 +589,8 @@ def _build_observed_point_cloud_for_step(
     obstacle_geometry_config: list[dict[str, Any]],
     legacy_obstacle_points: np.ndarray,
     robot_pose: np.ndarray,
-    legacy_observation_range: float,
-    legacy_max_points: int,
+    legacy_observation_range: Any,
+    legacy_max_points: Any,
 ) -> np.ndarray:
     if sensor_config is not None:
         return build_mid360_like_observed_point_cloud(
@@ -590,11 +602,48 @@ def _build_observed_point_cloud_for_step(
     local_legacy_points = build_range_based_local_observation(
         legacy_obstacle_points,
         robot_pose,
-        observation_range=legacy_observation_range,
-        max_points=legacy_max_points,
+        observation_range=float(legacy_observation_range),
+        max_points=int(legacy_max_points),
     )
     return transfer_from_local_to_global_frame(local_legacy_points, robot_pose).astype(
         np.float32
+    )
+
+
+def _controller_point_budget(
+    controller_config: Mapping[str, Any],
+    *,
+    sensor_config: dict[str, Any] | None,
+    legacy_max_obstacle_points: Any,
+) -> int:
+    if "max_obs_num" in controller_config:
+        point_budget = int(controller_config["max_obs_num"])
+    elif sensor_config is None and legacy_max_obstacle_points is not None:
+        point_budget = int(legacy_max_obstacle_points)
+    else:
+        raise ValueError(
+            "MID-360-like 3D scenario config requires controller.max_obs_num "
+            "for the controller obstacle point budget."
+        )
+    if point_budget <= 0:
+        raise ValueError("controller.max_obs_num must be positive.")
+    return point_budget
+
+
+def _validate_observation_config(
+    *,
+    sensor_config: dict[str, Any] | None,
+    legacy_observation_range: Any,
+    legacy_max_obstacle_points: Any,
+) -> None:
+    if sensor_config is not None:
+        return
+    if legacy_observation_range is not None and legacy_max_obstacle_points is not None:
+        return
+    raise ValueError(
+        "3D scenario config requires a top-level sensor section for the "
+        "MID-360-like observation path. Legacy configs must provide "
+        "simulation.observation_range and simulation.max_obstacle_points."
     )
 
 
@@ -1096,14 +1145,14 @@ def _build_controller(
     controller_config: Mapping[str, Any],
     *,
     model_dt: float,
-    max_obstacle_points: int,
+    controller_point_budget: int,
     robot_volume_config: list[dict[str, Any]],
     clearance_margin: float,
 ) -> MPPIController3D:
     kwargs = copy.deepcopy(dict(controller_config))
     kwargs.setdefault("model_dt", model_dt)
     kwargs.setdefault("time_steps", 12)
-    kwargs.setdefault("max_obs_num", max_obstacle_points)
+    kwargs.setdefault("max_obs_num", controller_point_budget)
     kwargs.setdefault("robot_volume_config", robot_volume_config)
     kwargs.setdefault("obstacles_collision_margin_distance", clearance_margin)
     kwargs.setdefault(

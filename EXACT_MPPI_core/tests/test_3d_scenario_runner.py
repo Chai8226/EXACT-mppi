@@ -3,6 +3,7 @@ import json
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 import exact_mppi.scenario_runner_3d as scenario_runner_3d
 from exact_mppi.mppi_3d import BoxUnionVolume3D
@@ -499,6 +500,82 @@ def test_static_3d_scenario_suite_configs_do_not_define_dynamic_obstacles():
 
         assert "dynamic_obstacles" not in config
         assert "dynamic_obstacles" not in config.get("obstacles", {})
+
+
+def test_static_3d_scenario_suite_configs_use_mid360_sensor_config():
+    for scenario_name in STATIC_3D_SCENARIOS:
+        config = load_builtin_scenario_config(scenario_name)
+
+        assert "observation_range" not in config.get("simulation", {})
+        assert "max_obstacle_points" not in config.get("simulation", {})
+        assert config["sensor"] == {
+            "type": "mid360_like",
+            "min_range_m": 0.1,
+            "max_range_m": 10.0,
+            "horizontal_fov_deg": 360.0,
+            "vertical_min_deg": -7.0,
+            "vertical_max_deg": 52.0,
+            "horizontal_samples": 36,
+            "vertical_samples": 8,
+            "noise_std_m": 0.0,
+            "dropout_probability": 0.0,
+        }
+        assert int(config["controller"]["max_obs_num"]) > 0
+
+
+def test_migrated_builtin_config_does_not_need_legacy_points_for_perception(
+    monkeypatch,
+):
+    captured_obstacle_points = []
+
+    class FakeController:
+        def computeVelocityCommands(self, **kwargs):
+            captured_obstacle_points.append(
+                np.asarray(kwargs["obstacle_points"], dtype=np.float32)
+            )
+            return np.zeros(4, dtype=np.float32)
+
+        def getOptimalTrajectory(self):
+            return None
+
+    monkeypatch.setattr(
+        scenario_runner_3d,
+        "_build_controller",
+        lambda *_, **__: FakeController(),
+    )
+    config = load_builtin_scenario_config("narrow_gap_t_volume_3d")
+    config["simulation"]["max_steps"] = 1
+    config["obstacles"].pop("points", None)
+
+    result = run_3d_scenario(config)
+
+    assert result.global_obstacle_points.shape == (0, 3)
+    assert result.observed_point_cloud_history[0].shape[0] > 0
+    assert captured_obstacle_points[0].shape[0] > 0
+
+
+def test_mid360_config_requires_controller_point_budget():
+    config = load_builtin_scenario_config("narrow_gap_t_volume_3d")
+    del config["controller"]["max_obs_num"]
+
+    with pytest.raises(ValueError, match="controller.max_obs_num"):
+        run_3d_scenario(config)
+
+
+def test_new_3d_observation_path_requires_sensor_config():
+    config = load_builtin_scenario_config("narrow_gap_t_volume_3d")
+    del config["sensor"]
+
+    with pytest.raises(ValueError, match="top-level sensor"):
+        run_3d_scenario(config)
+
+
+def test_mid360_config_rejects_unsupported_sensor_type():
+    config = load_builtin_scenario_config("narrow_gap_t_volume_3d")
+    config["sensor"]["type"] = "depth_camera"
+
+    with pytest.raises(ValueError, match="Unsupported 3D sensor type"):
+        run_3d_scenario(config)
 
 
 def test_3d_smoothness_telemetry_uses_known_command_and_state_histories():

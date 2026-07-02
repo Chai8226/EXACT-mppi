@@ -33,6 +33,7 @@ STATIC_3D_SCENARIOS = (
 BASELINE_SMOOTHNESS_REFERENCE_SCENARIO = "open_track_3d"
 BASELINE_SMOOTHNESS_MULTIPLIER = 2.0
 BASELINE_SMOOTHNESS_EPSILON = 1e-6
+DEFAULT_REFERENCE_WINDOW_LOOKAHEAD_DISTANCE = 1.2
 
 
 @dataclass(frozen=True)
@@ -225,6 +226,12 @@ def run_3d_scenario(
     clearance_margin = float(simulation.get("clearance_margin", 0.04))
     observation_range = float(simulation.get("observation_range", 1.7))
     max_obstacle_points = int(simulation.get("max_obstacle_points", 48))
+    reference_window_lookahead_distance = float(
+        simulation.get(
+            "reference_window_lookahead_distance",
+            DEFAULT_REFERENCE_WINDOW_LOOKAHEAD_DISTANCE,
+        )
+    )
 
     robot_volume_config = _load_robot_volume_config(cfg)
     robot_volume = BoxUnionVolume3D.from_config(robot_volume_config)
@@ -242,7 +249,7 @@ def run_3d_scenario(
         robot_volume_config=robot_volume_config,
         clearance_margin=clearance_margin,
     )
-    time_steps = int(cfg.get("controller", {}).get("time_steps", 12))
+    time_steps = int(controller_config.get("time_steps", 12))
 
     goal = reference_path[-1].copy()
     state = reference_path[0].copy()
@@ -260,7 +267,12 @@ def run_3d_scenario(
     clearance_history = [minimum_clearance]
 
     for _ in range(max_steps):
-        global_plan = select_global_plan(reference_path, state, time_steps)
+        global_plan = select_global_plan(
+            reference_path,
+            state,
+            time_steps,
+            reference_window_lookahead_distance=reference_window_lookahead_distance,
+        )
         local_plan = transfer_from_global_to_local_frame(global_plan, state)
         local_goal = transfer_from_global_to_local_frame(goal[None, :], state)[0]
         local_obstacles = build_range_based_local_observation(
@@ -357,6 +369,7 @@ def build_3d_replay_data(
             "frame_index": idx,
             "state": state.tolist(),
             "executed_path": frame_state_history.tolist(),
+            "reference_window": result.local_plan_history[idx].tolist(),
             "local_plan": result.local_plan_history[idx].tolist(),
             "optimal_trajectory": result.optimal_trajectory_history[idx].tolist(),
             "command": command.tolist(),
@@ -543,9 +556,16 @@ def select_local_plan(
     global_reference_path: np.ndarray,
     robot_pose: np.ndarray,
     time_steps: int,
+    *,
+    reference_window_lookahead_distance: float | None = None,
 ) -> np.ndarray:
     return transfer_from_global_to_local_frame(
-        select_global_plan(global_reference_path, robot_pose, time_steps),
+        select_global_plan(
+            global_reference_path,
+            robot_pose,
+            time_steps,
+            reference_window_lookahead_distance=reference_window_lookahead_distance,
+        ),
         robot_pose,
     )
 
@@ -554,9 +574,18 @@ def select_global_plan(
     global_reference_path: np.ndarray,
     robot_pose: np.ndarray,
     time_steps: int,
+    *,
+    reference_window_lookahead_distance: float | None = None,
 ) -> np.ndarray:
     distances = np.linalg.norm(global_reference_path[:, :3] - robot_pose[:3], axis=1)
     nearest_idx = int(np.argmin(distances))
+    if reference_window_lookahead_distance is not None:
+        return _resample_reference_window(
+            global_reference_path,
+            nearest_idx=nearest_idx,
+            time_steps=time_steps,
+            lookahead_distance=reference_window_lookahead_distance,
+        )
     end_idx = nearest_idx + time_steps
     if end_idx <= global_reference_path.shape[0]:
         global_plan = global_reference_path[nearest_idx:end_idx]
@@ -565,6 +594,61 @@ def select_global_plan(
         padding = np.repeat(global_reference_path[-1][None, :], pad_count, axis=0)
         global_plan = np.vstack([global_reference_path[nearest_idx:], padding])
     return global_plan.astype(np.float32)
+
+
+def _resample_reference_window(
+    global_reference_path: np.ndarray,
+    *,
+    nearest_idx: int,
+    time_steps: int,
+    lookahead_distance: float,
+) -> np.ndarray:
+    if time_steps <= 0:
+        raise ValueError("time_steps must be positive.")
+    if lookahead_distance <= 0.0:
+        raise ValueError("reference_window_lookahead_distance must be positive.")
+
+    reference_path = np.asarray(global_reference_path, dtype=np.float32)
+    suffix = reference_path[nearest_idx:]
+    if suffix.shape[0] == 0:
+        suffix = reference_path[-1:]
+    if time_steps == 1 or suffix.shape[0] == 1:
+        return np.repeat(suffix[0][None, :], time_steps, axis=0).astype(np.float32)
+
+    segment_lengths = np.linalg.norm(np.diff(suffix[:, :3], axis=0), axis=1)
+    cumulative = np.concatenate([[0.0], np.cumsum(segment_lengths)])
+    sample_distances = np.linspace(0.0, lookahead_distance, time_steps)
+
+    window = np.empty((time_steps, reference_path.shape[1]), dtype=np.float32)
+    for sample_index, sample_distance in enumerate(sample_distances):
+        if sample_distance >= cumulative[-1]:
+            window[sample_index] = suffix[-1]
+            continue
+        segment_index = int(np.searchsorted(cumulative, sample_distance, side="right") - 1)
+        segment_index = min(segment_index, suffix.shape[0] - 2)
+        segment_length = segment_lengths[segment_index]
+        if segment_length <= 1e-8:
+            alpha = 0.0
+        else:
+            alpha = (sample_distance - cumulative[segment_index]) / segment_length
+        window[sample_index] = _interpolate_reference_state(
+            suffix[segment_index],
+            suffix[segment_index + 1],
+            float(alpha),
+        )
+    return window.astype(np.float32)
+
+
+def _interpolate_reference_state(
+    start: np.ndarray,
+    end: np.ndarray,
+    alpha: float,
+) -> np.ndarray:
+    interpolated = start + (end - start) * alpha
+    if interpolated.shape[0] >= 4:
+        yaw_delta = np.arctan2(np.sin(end[3] - start[3]), np.cos(end[3] - start[3]))
+        interpolated[3] = start[3] + yaw_delta * alpha
+    return interpolated.astype(np.float32)
 
 
 def transfer_from_global_to_local_frame(

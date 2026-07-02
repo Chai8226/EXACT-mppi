@@ -337,7 +337,7 @@ function renderExactFrameState(frame) {
     return;
   }
 
-  renderLocalPlan(frame.local_plan);
+  renderLocalPlan(frame.reference_window ?? frame.local_plan);
   renderExecutedPath(frame.executed_path);
   renderOptimalTrajectory(frame.optimal_trajectory);
   renderRollouts(frame.rollouts);

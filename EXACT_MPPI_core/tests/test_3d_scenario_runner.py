@@ -15,6 +15,7 @@ from exact_mppi.scenario_runner_3d import (
     load_builtin_scenario_config,
     run_3d_scenario,
     run_3d_static_scenario_suite,
+    select_global_plan,
     transfer_from_global_to_local_frame,
     write_3d_baseline_replay_artifacts,
     write_3d_replay_json,
@@ -108,7 +109,8 @@ def test_open_track_3d_exports_world_frame_replay_data(tmp_path):
 
 
 def test_narrow_gap_t_volume_3d_exports_finite_replay_data(tmp_path):
-    result = run_3d_scenario(load_builtin_scenario_config("narrow_gap_t_volume_3d"))
+    config = load_builtin_scenario_config("narrow_gap_t_volume_3d")
+    result = run_3d_scenario(config)
 
     replay = build_3d_replay_data(result)
     replay_path = tmp_path / "narrow_gap_t_volume_3d.replay.json"
@@ -119,6 +121,12 @@ def test_narrow_gap_t_volume_3d_exports_finite_replay_data(tmp_path):
     assert_replay_frames(replay, result, require_clearance=True)
     assert_replay_geometry_is_world_frame(replay)
     assert replay["scene"]["robot_volume"]["boxes"] == result.robot_volume_config
+    assert len(replay["frames"][0]["reference_window"]) == config_time_steps(config)
+    first_reference_window = np.asarray(
+        replay["frames"][0]["reference_window"],
+        dtype=np.float32,
+    )
+    assert first_reference_window[-1, 0] - first_reference_window[0, 0] >= 1.0
 
 
 def test_narrow_gap_t_volume_3d_exports_obstacle_geometry_separate_from_points():
@@ -136,6 +144,23 @@ def test_narrow_gap_t_volume_3d_exports_obstacle_geometry_separate_from_points()
         assert len(obstacle["size"]) == 3
         assert all(np.isfinite(value) for value in obstacle["center"])
         assert all(value > 0 for value in obstacle["size"])
+
+
+def test_dense_reference_path_window_spans_configured_physical_lookahead():
+    reference_path = np.asarray(
+        [[x / 10.0, 0.0, 0.0, 0.0] for x in range(31)],
+        dtype=np.float32,
+    )
+
+    window = select_global_plan(
+        reference_path,
+        np.asarray([0.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        time_steps=5,
+        reference_window_lookahead_distance=1.0,
+    )
+
+    assert window.shape == (5, 4)
+    np.testing.assert_allclose(window[:, 0], [0.0, 0.25, 0.5, 0.75, 1.0])
 
 
 def test_replay_rollouts_are_omitted_by_default():
@@ -471,6 +496,7 @@ def assert_replay_frames(replay, result, *, require_clearance):
         assert frame["state"] == result.state_history[frame_index + 1].tolist()
         assert frame["executed_path"] == result.state_history[: frame_index + 2].tolist()
         assert frame["command"] == result.command_history[frame_index].tolist()
+        assert frame["reference_window"] == result.local_plan_history[frame_index].tolist()
         assert frame["local_plan"] == result.local_plan_history[frame_index].tolist()
         assert (
             frame["optimal_trajectory"]
@@ -498,7 +524,14 @@ def assert_replay_geometry_is_world_frame(replay):
 
 
 def assert_frame_arrays_are_finite(frame):
-    for key in ("state", "executed_path", "command", "local_plan", "optimal_trajectory"):
+    for key in (
+        "state",
+        "executed_path",
+        "command",
+        "reference_window",
+        "local_plan",
+        "optimal_trajectory",
+    ):
         assert np.all(np.isfinite(np.asarray(frame[key], dtype=np.float32)))
     for rollout in frame.get("rollouts", []):
         assert np.all(np.isfinite(np.asarray(rollout, dtype=np.float32)))
@@ -524,6 +557,10 @@ def recompute_minimum_clearance_from_result_volume(result):
         distances = volume.signed_distance(jnp.asarray(body_points, dtype=jnp.float32))
         clearances.append(float(jax.device_get(jnp.min(distances))))
     return min(clearances)
+
+
+def config_time_steps(config):
+    return int(config.get("controller", {}).get("time_steps", 12))
 
 
 def assert_t_volume_has_nonconvex_notch(robot_volume_config):

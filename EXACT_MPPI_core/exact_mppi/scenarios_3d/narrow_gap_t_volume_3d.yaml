@@ -8,6 +8,7 @@ simulation:
   clearance_margin: 0.04
   observation_range: 1.8
   max_obstacle_points: 64
+  reference_window_lookahead_distance: 1.2
 
 robot_volume:
   type: box_union

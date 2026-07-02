@@ -23,6 +23,15 @@ import yaml
 from exact_mppi.mppi_3d import BoxUnionVolume3D, MPPIController3D
 
 
+STATIC_3D_SCENARIOS = (
+    "open_track_3d",
+    "narrow_gap_t_volume_3d",
+    "vertical_gate_3d",
+    "t_shape_trap_3d",
+    "cluttered_corridor_3d",
+)
+
+
 @dataclass(frozen=True)
 class ScenarioRunResult3D:
     scenario: str
@@ -63,6 +72,13 @@ def load_builtin_scenario_config(name: str) -> dict[str, Any]:
 
 def load_scenario_config(path: str | Path) -> dict[str, Any]:
     return _load_yaml_text(Path(path).read_text(encoding="utf-8"))
+
+
+def run_3d_static_scenario_suite(
+    scenario_names: list[str] | tuple[str, ...] | None = None,
+) -> list[ScenarioRunResult3D]:
+    names = STATIC_3D_SCENARIOS if scenario_names is None else tuple(scenario_names)
+    return [run_3d_scenario(load_builtin_scenario_config(name)) for name in names]
 
 
 def run_3d_scenario(config: Mapping[str, Any]) -> ScenarioRunResult3D:
@@ -283,6 +299,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--scenario", default="open_track_3d")
+    source.add_argument(
+        "--all-static",
+        action="store_true",
+        help="Run every built-in static 3D scenario and emit a summary list.",
+    )
     source.add_argument("--config", type=Path)
     parser.add_argument(
         "--summary-json",
@@ -294,19 +315,27 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
-    config = (
-        load_scenario_config(args.config)
-        if args.config is not None
-        else load_builtin_scenario_config(args.scenario)
-    )
-    result = run_3d_scenario(config)
-    summary_json = json.dumps(result.summary, allow_nan=False, sort_keys=True)
+    if args.all_static:
+        results = run_3d_static_scenario_suite()
+        summaries = [result.summary for result in results]
+        summary_json = json.dumps(summaries, allow_nan=False, sort_keys=True)
+        exit_ok = True
+    else:
+        config = (
+            load_scenario_config(args.config)
+            if args.config is not None
+            else load_builtin_scenario_config(args.scenario)
+        )
+        result = run_3d_scenario(config)
+        summary_json = json.dumps(result.summary, allow_nan=False, sort_keys=True)
+        exit_ok = result.reached_goal and not result.collided
+
     if args.summary_json is not None:
         args.summary_json.parent.mkdir(parents=True, exist_ok=True)
         args.summary_json.write_text(summary_json + "\n", encoding="utf-8")
     else:
         print(summary_json)
-    return 0 if result.reached_goal and not result.collided else 1
+    return 0 if exit_ok else 1
 
 
 def _load_yaml_text(text: str) -> dict[str, Any]:

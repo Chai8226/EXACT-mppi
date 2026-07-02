@@ -1,0 +1,83 @@
+name: t_shape_trap_3d
+description: Deterministic static T-shaped trap scenario for yaw-only 3D planning.
+
+simulation:
+  model_dt: 0.15
+  max_steps: 90
+  goal_tolerance: 0.30
+  clearance_margin: 0.04
+  observation_range: 1.9
+  max_obstacle_points: 72
+
+robot_volume:
+  type: box_union
+  boxes:
+    - center: [-0.08, 0.0, 0.0]
+      size: [0.68, 0.22, 0.30]
+    - center: [0.22, 0.0, 0.0]
+      size: [0.22, 0.62, 0.30]
+
+reference_path:
+  point_count: 108
+  waypoints:
+    - [0.0, -0.45, 0.0, 0.0]
+    - [0.8, -0.45, 0.0, 0.0]
+    - [1.35, -0.15, 0.0, 0.45]
+    - [1.65, 0.35, 0.0, 0.75]
+    - [2.25, 0.45, 0.0, 0.2]
+    - [3.2, 0.45, 0.0, 0.0]
+
+obstacles:
+  points:
+    - [1.05, -0.08, 0.0]
+    - [1.25, -0.08, 0.0]
+    - [1.45, -0.08, 0.0]
+    - [1.65, -0.08, 0.0]
+    - [1.85, -0.08, 0.0]
+    - [2.05, -0.08, 0.0]
+    - [2.25, -0.08, 0.0]
+    - [2.25, 0.12, 0.0]
+    - [2.25, 0.32, 0.0]
+    - [2.25, 0.52, 0.0]
+    - [2.25, 0.72, 0.0]
+    - [1.05, 0.92, 0.0]
+    - [1.25, 0.92, 0.0]
+    - [1.45, 0.92, 0.0]
+    - [1.65, 0.92, 0.0]
+    - [1.85, 0.92, 0.0]
+    - [2.05, 0.92, 0.0]
+    - [2.25, 0.92, 0.0]
+    - [1.05, -0.85, 0.0]
+    - [1.25, -0.85, 0.0]
+    - [1.45, -0.85, 0.0]
+    - [1.65, -0.85, 0.0]
+    - [1.85, -0.85, 0.0]
+
+controller:
+  time_steps: 12
+  batch_size: 64
+  iteration_count: 2
+  seed: 43
+  vx_max: 1.15
+  vx_min: -0.2
+  vy_max: 0.55
+  vz_max: 0.45
+  wz_max: 1.1
+  vx_std: 0.25
+  vy_std: 0.18
+  vz_std: 0.08
+  wz_std: 0.14
+  temperature: 0.25
+  goal_weight: 6.5
+  path_weight: 8.0
+  obstacles_repulsion_weight: 0.7
+  obstacles_critical_weight: 38.0
+  obstacles_repulsion_distance: 0.50
+  PreferForwardCritic:
+    enabled: true
+    cost_weight: 0.5
+  VelocityDeadbandCritic:
+    enabled: false
+  TwirlingCritic:
+    enabled: true
+    cost_weight: 0.1

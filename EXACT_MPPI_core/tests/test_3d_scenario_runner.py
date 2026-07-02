@@ -6,9 +6,11 @@ import numpy as np
 
 from exact_mppi.mppi_3d import BoxUnionVolume3D
 from exact_mppi.scenario_runner_3d import (
+    STATIC_3D_SCENARIOS,
     compute_3d_smoothness_telemetry,
     load_builtin_scenario_config,
     run_3d_scenario,
+    run_3d_static_scenario_suite,
     transfer_from_global_to_local_frame,
 )
 
@@ -85,6 +87,59 @@ def test_narrow_gap_t_volume_export_recomputes_reported_clearance():
     )
 
 
+def test_static_3d_scenario_suite_contains_first_static_scenarios():
+    assert STATIC_3D_SCENARIOS == (
+        "open_track_3d",
+        "narrow_gap_t_volume_3d",
+        "vertical_gate_3d",
+        "t_shape_trap_3d",
+        "cluttered_corridor_3d",
+    )
+
+
+def test_new_static_3d_scenarios_run_headlessly_with_standard_summaries():
+    for scenario_name in (
+        "vertical_gate_3d",
+        "t_shape_trap_3d",
+        "cluttered_corridor_3d",
+    ):
+        config = load_builtin_scenario_config(scenario_name)
+
+        result = run_3d_scenario(config)
+
+        assert_standard_summary(result.summary, scenario_name)
+        assert result.global_obstacle_points.shape[0] > 0
+
+
+def test_static_3d_scenario_suite_runs_selected_scenarios_in_order():
+    results = run_3d_static_scenario_suite(
+        ["vertical_gate_3d", "cluttered_corridor_3d"]
+    )
+
+    assert [result.scenario for result in results] == [
+        "vertical_gate_3d",
+        "cluttered_corridor_3d",
+    ]
+    for result in results:
+        assert_standard_summary(result.summary, result.scenario)
+
+
+def test_static_3d_scenario_suite_runs_all_static_scenarios():
+    results = run_3d_static_scenario_suite()
+
+    assert [result.scenario for result in results] == list(STATIC_3D_SCENARIOS)
+    for result in results:
+        assert_standard_summary(result.summary, result.scenario)
+
+
+def test_static_3d_scenario_suite_configs_do_not_define_dynamic_obstacles():
+    for scenario_name in STATIC_3D_SCENARIOS:
+        config = load_builtin_scenario_config(scenario_name)
+
+        assert "dynamic_obstacles" not in config
+        assert "dynamic_obstacles" not in config.get("obstacles", {})
+
+
 def test_3d_smoothness_telemetry_uses_known_command_and_state_histories():
     command_history = np.asarray(
         [
@@ -156,6 +211,20 @@ def test_3d_smoothness_telemetry_unwraps_yaw_before_trajectory_differences():
 def assert_finite_metric_values(metrics):
     for value in metrics.values():
         assert np.isfinite(value)
+
+
+def assert_standard_summary(summary, scenario_name):
+    assert summary["scenario"] == scenario_name
+    assert isinstance(summary["reached_goal"], bool)
+    assert isinstance(summary["collided"], bool)
+    assert np.isfinite(summary["final_distance"])
+    assert "minimum_clearance" in summary
+    if summary["minimum_clearance"] is not None:
+        assert np.isfinite(summary["minimum_clearance"])
+    assert summary["step_count"] > 0
+    assert_finite_metric_values(summary["command_smoothness"])
+    assert_finite_metric_values(summary["trajectory_smoothness"])
+    json.dumps(summary, allow_nan=False)
 
 
 def recompute_minimum_clearance_from_result_volume(result):

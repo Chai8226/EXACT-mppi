@@ -1,0 +1,72 @@
+name: vertical_gate_3d
+description: Deterministic vertical-gate yaw-only 3D scenario with static obstacle points.
+
+simulation:
+  model_dt: 0.15
+  max_steps: 80
+  goal_tolerance: 0.28
+  clearance_margin: 0.04
+  observation_range: 1.8
+  max_obstacle_points: 64
+
+robot_volume:
+  boxes:
+    - center: [0.0, 0.0, 0.0]
+      size: [0.35, 0.35, 0.35]
+
+reference_path:
+  point_count: 96
+  waypoints:
+    - [0.0, 0.0, 0.0, 0.0]
+    - [0.8, 0.0, 0.0, 0.0]
+    - [1.4, 0.0, 0.62, 0.0]
+    - [1.9, 0.0, 0.62, 0.0]
+    - [2.5, 0.0, 0.0, 0.0]
+    - [3.2, 0.0, 0.0, 0.0]
+
+obstacles:
+  points:
+    - [1.35, -0.48, 0.20]
+    - [1.55, -0.48, 0.20]
+    - [1.75, -0.48, 0.20]
+    - [1.95, -0.48, 0.20]
+    - [1.35, 0.48, 0.20]
+    - [1.55, 0.48, 0.20]
+    - [1.75, 0.48, 0.20]
+    - [1.95, 0.48, 0.20]
+    - [1.45, -0.35, 0.98]
+    - [1.65, -0.18, 0.98]
+    - [1.85, 0.00, 0.98]
+    - [1.65, 0.18, 0.98]
+    - [1.45, 0.35, 0.98]
+    - [1.55, 0.00, 0.20]
+    - [1.75, 0.00, 0.20]
+
+controller:
+  time_steps: 12
+  batch_size: 64
+  iteration_count: 2
+  seed: 41
+  vx_max: 1.15
+  vx_min: -0.2
+  vy_max: 0.45
+  vz_max: 1.0
+  wz_max: 1.0
+  vx_std: 0.25
+  vy_std: 0.16
+  vz_std: 0.24
+  wz_std: 0.12
+  temperature: 0.25
+  goal_weight: 6.2
+  path_weight: 7.5
+  obstacles_repulsion_weight: 0.8
+  obstacles_critical_weight: 36.0
+  obstacles_repulsion_distance: 0.55
+  PreferForwardCritic:
+    enabled: true
+    cost_weight: 0.5
+  VelocityDeadbandCritic:
+    enabled: false
+  TwirlingCritic:
+    enabled: true
+    cost_weight: 0.1

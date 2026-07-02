@@ -7,11 +7,13 @@ import numpy as np
 from exact_mppi.mppi_3d import BoxUnionVolume3D
 from exact_mppi.scenario_runner_3d import (
     STATIC_3D_SCENARIOS,
+    build_3d_replay_data,
     compute_3d_smoothness_telemetry,
     load_builtin_scenario_config,
     run_3d_scenario,
     run_3d_static_scenario_suite,
     transfer_from_global_to_local_frame,
+    write_3d_replay_json,
 )
 
 
@@ -85,6 +87,34 @@ def test_narrow_gap_t_volume_export_recomputes_reported_clearance():
         result.minimum_clearance,
         atol=1e-5,
     )
+
+
+def test_open_track_3d_exports_world_frame_replay_data(tmp_path):
+    result = run_3d_scenario(load_builtin_scenario_config("open_track_3d"))
+
+    replay = build_3d_replay_data(result)
+    replay_path = tmp_path / "open_track_3d.replay.json"
+    write_3d_replay_json(result, replay_path)
+    written_replay = json.loads(replay_path.read_text(encoding="utf-8"))
+
+    assert written_replay == replay
+    assert_replay_scene(replay, result)
+    assert_replay_frames(replay, result, require_clearance=False)
+    assert_replay_geometry_is_world_frame(replay)
+
+
+def test_narrow_gap_t_volume_3d_exports_finite_replay_data(tmp_path):
+    result = run_3d_scenario(load_builtin_scenario_config("narrow_gap_t_volume_3d"))
+
+    replay = build_3d_replay_data(result)
+    replay_path = tmp_path / "narrow_gap_t_volume_3d.replay.json"
+    write_3d_replay_json(result, replay_path)
+
+    assert json.loads(replay_path.read_text(encoding="utf-8")) == replay
+    assert_replay_scene(replay, result)
+    assert_replay_frames(replay, result, require_clearance=True)
+    assert_replay_geometry_is_world_frame(replay)
+    assert replay["scene"]["robot_volume"]["boxes"] == result.robot_volume_config
 
 
 def test_static_3d_scenario_suite_contains_first_static_scenarios():
@@ -225,6 +255,69 @@ def assert_standard_summary(summary, scenario_name):
     assert_finite_metric_values(summary["command_smoothness"])
     assert_finite_metric_values(summary["trajectory_smoothness"])
     json.dumps(summary, allow_nan=False)
+
+
+def assert_replay_scene(replay, result):
+    scene = replay["scene"]
+
+    assert replay["schema_version"] == 1
+    assert scene["scenario"] == result.scenario
+    assert scene["coordinate_conventions"] == {
+        "frame": "world",
+        "state": "[x, y, z, yaw]",
+        "command": "[vx, vy, vz, wz]",
+        "yaw_unit": "radians",
+    }
+    assert scene["reference_path"] == result.global_reference_path.tolist()
+    assert scene["obstacle_points"] == result.global_obstacle_points.tolist()
+    assert scene["robot_volume"]["type"] == "box_union"
+    assert scene["robot_volume"]["boxes"] == result.robot_volume_config
+    assert replay["summary"] == result.summary
+    json.dumps(replay, allow_nan=False)
+
+
+def assert_replay_frames(replay, result, *, require_clearance):
+    frames = replay["frames"]
+
+    assert len(frames) == result.step_count
+    assert len(frames) == len(result.command_history)
+    assert len(frames) == len(result.local_plan_history)
+    assert len(frames) == len(result.optimal_trajectory_history)
+
+    for frame_index, frame in enumerate(frames):
+        assert frame["frame_index"] == frame_index
+        assert frame["state"] == result.state_history[frame_index + 1].tolist()
+        assert frame["executed_path"] == result.state_history[: frame_index + 2].tolist()
+        assert frame["command"] == result.command_history[frame_index].tolist()
+        assert frame["local_plan"] == result.local_plan_history[frame_index].tolist()
+        assert (
+            frame["optimal_trajectory"]
+            == result.optimal_trajectory_history[frame_index].tolist()
+        )
+        assert np.isfinite(frame["goal_distance"])
+        assert "smoothness_telemetry" in frame
+        assert_finite_metric_values(frame["smoothness_telemetry"]["command_smoothness"])
+        assert_finite_metric_values(
+            frame["smoothness_telemetry"]["trajectory_smoothness"]
+        )
+        assert_frame_arrays_are_finite(frame)
+        if require_clearance:
+            assert np.isfinite(frame["clearance"])
+        else:
+            assert frame["clearance"] is None or np.isfinite(frame["clearance"])
+
+
+def assert_replay_geometry_is_world_frame(replay):
+    final_frame = replay["frames"][-1]
+
+    assert final_frame["state"][0] > 1.0
+    assert final_frame["local_plan"][0][0] > 1.0
+    assert final_frame["optimal_trajectory"][0][0] > 1.0
+
+
+def assert_frame_arrays_are_finite(frame):
+    for key in ("state", "executed_path", "command", "local_plan", "optimal_trajectory"):
+        assert np.all(np.isfinite(np.asarray(frame[key], dtype=np.float32)))
 
 
 def recompute_minimum_clearance_from_result_volume(result):

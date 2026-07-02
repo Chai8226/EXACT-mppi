@@ -43,6 +43,9 @@ class ScenarioRunResult3D:
     final_state: np.ndarray
     state_history: np.ndarray
     command_history: np.ndarray
+    local_plan_history: np.ndarray
+    optimal_trajectory_history: np.ndarray
+    clearance_history: list[float | None]
     global_reference_path: np.ndarray
     global_obstacle_points: np.ndarray
     robot_volume_config: list[dict[str, Any]]
@@ -110,14 +113,18 @@ def run_3d_scenario(config: Mapping[str, Any]) -> ScenarioRunResult3D:
     speed = np.zeros(4, dtype=np.float32)
     state_history = [state.copy()]
     command_history = []
+    local_plan_history = []
+    optimal_trajectory_history = []
     minimum_clearance = _minimum_state_clearance(
         robot_volume,
         obstacle_points,
         state,
     )
+    clearance_history = [minimum_clearance]
 
     for _ in range(max_steps):
-        local_plan = select_local_plan(reference_path, state, time_steps)
+        global_plan = select_global_plan(reference_path, state, time_steps)
+        local_plan = transfer_from_global_to_local_frame(global_plan, state)
         local_goal = transfer_from_global_to_local_frame(goal[None, :], state)[0]
         local_obstacles = build_range_based_local_observation(
             obstacle_points,
@@ -134,14 +141,25 @@ def run_3d_scenario(config: Mapping[str, Any]) -> ScenarioRunResult3D:
             obstacle_points=local_obstacles,
         )
         command = np.asarray(command, dtype=np.float32)
+        optimal_trajectory = controller.getOptimalTrajectory()
+        if optimal_trajectory is None:
+            global_optimal_trajectory = np.empty((0, 4), dtype=np.float32)
+        else:
+            global_optimal_trajectory = transfer_from_local_to_global_frame(
+                np.asarray(optimal_trajectory, dtype=np.float32),
+                state,
+            )
 
         state = integrate_yaw_only_3d_state(state, command, model_dt)
         speed = command
         state_history.append(state.copy())
         command_history.append(command.copy())
+        local_plan_history.append(global_plan.copy())
+        optimal_trajectory_history.append(global_optimal_trajectory.copy())
 
         clearance = _minimum_state_clearance(robot_volume, obstacle_points, state)
         minimum_clearance = _merge_minimum_clearance(minimum_clearance, clearance)
+        clearance_history.append(clearance)
 
         if np.linalg.norm(state[:3] - goal[:3]) <= goal_tolerance:
             break
@@ -162,10 +180,76 @@ def run_3d_scenario(config: Mapping[str, Any]) -> ScenarioRunResult3D:
         final_state=state.copy(),
         state_history=np.asarray(state_history, dtype=np.float32),
         command_history=np.asarray(command_history, dtype=np.float32).reshape((-1, 4)),
+        local_plan_history=np.asarray(local_plan_history, dtype=np.float32),
+        optimal_trajectory_history=np.asarray(
+            optimal_trajectory_history,
+            dtype=np.float32,
+        ),
+        clearance_history=clearance_history,
         global_reference_path=reference_path,
         global_obstacle_points=obstacle_points,
         robot_volume_config=robot_volume_config,
     )
+
+
+def build_3d_replay_data(result: ScenarioRunResult3D) -> dict[str, Any]:
+    goal = result.global_reference_path[-1]
+    frames = []
+    for idx, command in enumerate(result.command_history):
+        state = result.state_history[idx + 1]
+        frame_command_history = result.command_history[: idx + 1]
+        frame_state_history = result.state_history[: idx + 2]
+        frames.append(
+            {
+                "frame_index": idx,
+                "state": state.tolist(),
+                "executed_path": frame_state_history.tolist(),
+                "local_plan": result.local_plan_history[idx].tolist(),
+                "optimal_trajectory": result.optimal_trajectory_history[idx].tolist(),
+                "command": command.tolist(),
+                "clearance": result.clearance_history[idx + 1],
+                "goal_distance": float(np.linalg.norm(state[:3] - goal[:3])),
+                "smoothness_telemetry": compute_3d_smoothness_telemetry(
+                    command_history=frame_command_history,
+                    state_history=frame_state_history,
+                ),
+            }
+        )
+
+    return {
+        "schema_version": 1,
+        "summary": result.summary,
+        "scene": {
+            "scenario": result.scenario,
+            "coordinate_conventions": {
+                "frame": "world",
+                "state": "[x, y, z, yaw]",
+                "command": "[vx, vy, vz, wz]",
+                "yaw_unit": "radians",
+            },
+            "reference_path": result.global_reference_path.tolist(),
+            "obstacle_points": result.global_obstacle_points.tolist(),
+            "robot_volume": {
+                "type": "box_union",
+                "boxes": result.robot_volume_config,
+            },
+        },
+        "frames": frames,
+    }
+
+
+def write_3d_replay_json(
+    result: ScenarioRunResult3D,
+    path: str | Path,
+) -> None:
+    replay_json = json.dumps(
+        build_3d_replay_data(result),
+        allow_nan=False,
+        sort_keys=True,
+    )
+    replay_path = Path(path)
+    replay_path.parent.mkdir(parents=True, exist_ok=True)
+    replay_path.write_text(replay_json + "\n", encoding="utf-8")
 
 
 def compute_3d_smoothness_telemetry(
@@ -246,6 +330,17 @@ def select_local_plan(
     robot_pose: np.ndarray,
     time_steps: int,
 ) -> np.ndarray:
+    return transfer_from_global_to_local_frame(
+        select_global_plan(global_reference_path, robot_pose, time_steps),
+        robot_pose,
+    )
+
+
+def select_global_plan(
+    global_reference_path: np.ndarray,
+    robot_pose: np.ndarray,
+    time_steps: int,
+) -> np.ndarray:
     distances = np.linalg.norm(global_reference_path[:, :3] - robot_pose[:3], axis=1)
     nearest_idx = int(np.argmin(distances))
     end_idx = nearest_idx + time_steps
@@ -255,7 +350,7 @@ def select_local_plan(
         pad_count = end_idx - global_reference_path.shape[0]
         padding = np.repeat(global_reference_path[-1][None, :], pad_count, axis=0)
         global_plan = np.vstack([global_reference_path[nearest_idx:], padding])
-    return transfer_from_global_to_local_frame(global_plan, robot_pose)
+    return global_plan.astype(np.float32)
 
 
 def transfer_from_global_to_local_frame(
@@ -275,6 +370,26 @@ def transfer_from_global_to_local_frame(
         out[..., 2] = out[..., 2] - pose[2]
     if out.shape[-1] >= 4:
         out[..., 3] = _wrap_to_pi(out[..., 3] - pose[3])
+    return out
+
+
+def transfer_from_local_to_global_frame(
+    points: np.ndarray,
+    pose: np.ndarray,
+) -> np.ndarray:
+    p = np.asarray(points, dtype=np.float32)
+    pose = np.asarray(pose, dtype=np.float32).reshape(-1)
+    out = p.copy()
+
+    c = np.cos(pose[3])
+    s = np.sin(pose[3])
+    rotation_local_to_global = np.array([[c, s], [-s, c]], dtype=np.float32)
+
+    out[..., :2] = out[..., :2] @ rotation_local_to_global + pose[:2]
+    if out.shape[-1] >= 3:
+        out[..., 2] = out[..., 2] + pose[2]
+    if out.shape[-1] >= 4:
+        out[..., 3] = _wrap_to_pi(out[..., 3] + pose[3])
     return out
 
 
@@ -310,6 +425,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Write the machine-readable summary to this path.",
     )
+    parser.add_argument(
+        "--replay-json",
+        type=Path,
+        help="Write Offline Web replay JSON for the selected scenario.",
+    )
     return parser
 
 
@@ -329,6 +449,8 @@ def main(argv: list[str] | None = None) -> int:
         result = run_3d_scenario(config)
         summary_json = json.dumps(result.summary, allow_nan=False, sort_keys=True)
         exit_ok = result.reached_goal and not result.collided
+        if args.replay_json is not None:
+            write_3d_replay_json(result, args.replay_json)
 
     if args.summary_json is not None:
         args.summary_json.parent.mkdir(parents=True, exist_ok=True)

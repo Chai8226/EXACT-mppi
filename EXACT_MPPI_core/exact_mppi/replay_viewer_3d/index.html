@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>3D MPPI Replay</title>
+    <link rel="stylesheet" href="./style.css" />
+    <link
+      rel="modulepreload"
+      href="https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js"
+    />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="viewport" aria-label="Replay viewport">
+        <canvas id="scene"></canvas>
+        <div class="toolbar" aria-label="Replay controls">
+          <label class="file-control">
+            Replay
+            <input id="replay-file" type="file" accept="application/json,.json" />
+          </label>
+          <button id="play-toggle" type="button" title="Play or pause replay">
+            Play
+          </button>
+          <input
+            id="timeline"
+            type="range"
+            min="0"
+            max="0"
+            value="0"
+            step="1"
+            aria-label="Frame"
+          />
+          <label class="select-control">
+            Speed
+            <select id="speed">
+              <option value="0.25">0.25x</option>
+              <option value="0.5">0.5x</option>
+              <option value="1" selected>1x</option>
+              <option value="2">2x</option>
+              <option value="4">4x</option>
+            </select>
+          </label>
+        </div>
+        <aside class="metrics" aria-label="Frame metrics">
+          <dl id="frame-state">
+            <div>
+              <dt>Scenario</dt>
+              <dd id="metric-scenario">No replay</dd>
+            </div>
+            <div>
+              <dt>Frame</dt>
+              <dd id="metric-frame">0 / 0</dd>
+            </div>
+            <div>
+              <dt>Command</dt>
+              <dd id="metric-command">[0, 0, 0, 0]</dd>
+            </div>
+            <div>
+              <dt>Clearance</dt>
+              <dd id="metric-clearance">n/a</dd>
+            </div>
+            <div>
+              <dt>Goal distance</dt>
+              <dd id="metric-goal-distance">n/a</dd>
+            </div>
+            <div>
+              <dt>Command RMS</dt>
+              <dd id="metric-command-rms">n/a</dd>
+            </div>
+            <div>
+              <dt>Trajectory RMS</dt>
+              <dd id="metric-trajectory-rms">n/a</dd>
+            </div>
+          </dl>
+        </aside>
+      </section>
+    </main>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

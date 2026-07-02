@@ -33,3 +33,4 @@ include = ["exact_mppi*"]
 
 [tool.setuptools.package-data]
 "exact_mppi.scenarios_3d" = ["*.yaml"]
+"exact_mppi.replay_viewer_3d" = ["*.html", "*.js", "*.css", "*.md"]

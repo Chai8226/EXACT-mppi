@@ -52,6 +52,7 @@ class ScenarioRunResult3D:
     clearance_history: list[float | None]
     global_reference_path: np.ndarray
     global_obstacle_points: np.ndarray
+    obstacle_geometry_config: list[dict[str, Any]]
     robot_volume_config: list[dict[str, Any]]
 
     @property
@@ -228,7 +229,9 @@ def run_3d_scenario(
     robot_volume_config = _load_robot_volume_config(cfg)
     robot_volume = BoxUnionVolume3D.from_config(robot_volume_config)
     reference_path = _build_reference_path(cfg["reference_path"])
-    obstacle_points = _build_obstacle_points(cfg.get("obstacles", {}))
+    obstacle_config = cfg.get("obstacles", {})
+    obstacle_points = _build_obstacle_points(obstacle_config)
+    obstacle_geometry_config = _build_obstacle_geometry_config(obstacle_config)
     controller_config = dict(cfg.get("controller", {}))
     if collect_rollouts:
         controller_config["debug"] = True
@@ -333,6 +336,7 @@ def run_3d_scenario(
         clearance_history=clearance_history,
         global_reference_path=reference_path,
         global_obstacle_points=obstacle_points,
+        obstacle_geometry_config=obstacle_geometry_config,
         robot_volume_config=robot_volume_config,
     )
 
@@ -384,6 +388,7 @@ def build_3d_replay_data(
             },
             "reference_path": result.global_reference_path.tolist(),
             "obstacle_points": result.global_obstacle_points.tolist(),
+            "obstacle_geometry": result.obstacle_geometry_config,
             "robot_volume": {
                 "type": "box_union",
                 "boxes": result.robot_volume_config,
@@ -815,6 +820,47 @@ def _build_obstacle_points(config: Mapping[str, Any]) -> np.ndarray:
     if points.size == 0:
         return np.empty((0, 3), dtype=np.float32)
     return points.reshape((-1, 3)).astype(np.float32)
+
+
+def _build_obstacle_geometry_config(config: Mapping[str, Any]) -> list[dict[str, Any]]:
+    geometry = config.get("geometry", [])
+    if geometry is None:
+        return []
+    result = []
+    for index, obstacle in enumerate(geometry):
+        obstacle_type = str(obstacle.get("type", "box"))
+        if obstacle_type != "box":
+            raise ValueError(
+                f"Unsupported 3D obstacle geometry type at index {index}: "
+                f"{obstacle_type}"
+            )
+        center = _finite_vector3(
+            obstacle.get("center"),
+            f"obstacle geometry {index} center",
+        )
+        size = _finite_vector3(
+            obstacle.get("size"),
+            f"obstacle geometry {index} size",
+        )
+        if any(value <= 0.0 for value in size):
+            raise ValueError(f"obstacle geometry {index} size values must be positive.")
+        result.append(
+            {
+                "type": "box",
+                "center": center,
+                "size": size,
+            }
+        )
+    return result
+
+
+def _finite_vector3(value: Any, name: str) -> list[float]:
+    vector = np.asarray(value, dtype=np.float64)
+    if vector.shape != (3,):
+        raise ValueError(f"{name} must have shape (3,).")
+    if not np.all(np.isfinite(vector)):
+        raise ValueError(f"{name} must contain only finite values.")
+    return [float(item) for item in vector.tolist()]
 
 
 def _minimum_state_clearance(

@@ -27,6 +27,13 @@ reference_path:
     - [3.2, 0.0, 0.0, 0.0]
 
 obstacles:
+  geometry:
+    - type: box
+      center: [1.6, -0.47, 0.0]
+      size: [1.6, 0.10, 0.60]
+    - type: box
+      center: [1.6, 0.47, 0.0]
+      size: [1.6, 0.10, 0.60]
   points:
     - [0.9, -0.47, 0.0]
     - [1.1, -0.47, 0.0]

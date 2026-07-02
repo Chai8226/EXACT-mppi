@@ -121,6 +121,23 @@ def test_narrow_gap_t_volume_3d_exports_finite_replay_data(tmp_path):
     assert replay["scene"]["robot_volume"]["boxes"] == result.robot_volume_config
 
 
+def test_narrow_gap_t_volume_3d_exports_obstacle_geometry_separate_from_points():
+    result = run_3d_scenario(load_builtin_scenario_config("narrow_gap_t_volume_3d"))
+
+    replay = build_3d_replay_data(result)
+    scene = replay["scene"]
+
+    assert scene["obstacle_points"] == result.global_obstacle_points.tolist()
+    assert scene["obstacle_geometry"] == result.obstacle_geometry_config
+    assert len(scene["obstacle_geometry"]) == 2
+    for obstacle in scene["obstacle_geometry"]:
+        assert obstacle["type"] == "box"
+        assert len(obstacle["center"]) == 3
+        assert len(obstacle["size"]) == 3
+        assert all(np.isfinite(value) for value in obstacle["center"])
+        assert all(value > 0 for value in obstacle["size"])
+
+
 def test_replay_rollouts_are_omitted_by_default():
     result = run_3d_scenario(load_builtin_scenario_config("open_track_3d"))
 
@@ -434,6 +451,7 @@ def assert_replay_scene(replay, result):
     }
     assert scene["reference_path"] == result.global_reference_path.tolist()
     assert scene["obstacle_points"] == result.global_obstacle_points.tolist()
+    assert scene["obstacle_geometry"] == result.obstacle_geometry_config
     assert scene["robot_volume"]["type"] == "box_union"
     assert scene["robot_volume"]["boxes"] == result.robot_volume_config
     assert replay["summary"] == result.summary
@@ -577,6 +595,7 @@ def make_minimal_result(
             dtype=np.float32,
         ),
         global_obstacle_points=np.empty((0, 3), dtype=np.float32),
+        obstacle_geometry_config=[],
         robot_volume_config=[
             {
                 "center": [0.0, 0.0, 0.0],

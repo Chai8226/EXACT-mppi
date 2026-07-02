@@ -9,6 +9,7 @@ const speedSelect = document.getElementById("speed");
 const cameraModeSelect = document.getElementById("camera-mode");
 const layerControls = {
   obstacles: document.getElementById("layer-obstacles"),
+  obstacleGeometry: document.getElementById("layer-obstacle-geometry"),
   reference: document.getElementById("layer-reference"),
   localPlan: document.getElementById("layer-local-plan"),
   executed: document.getElementById("layer-executed"),
@@ -47,6 +48,7 @@ controls.target.set(1.6, 0.2, 0);
 
 const layerGroups = {
   obstacles: new THREE.Group(),
+  obstacleGeometry: new THREE.Group(),
   reference: new THREE.Group(),
   localPlan: new THREE.Group(),
   executed: new THREE.Group(),
@@ -58,6 +60,8 @@ scene.add(...Object.values(layerGroups));
 
 const layerColors = {
   obstacles: 0xe05a47,
+  obstacleGeometry: 0xe05a47,
+  obstacleGeometryEdges: 0x772f28,
   referencePath: 0x4aa3df,
   localPlan: 0xb48cf2,
   executedPath: 0x55c2a3,
@@ -70,6 +74,18 @@ const layerColors = {
 
 const materials = {
   obstacle: new THREE.PointsMaterial({ color: layerColors.obstacles, size: 0.055 }),
+  obstacleGeometry: new THREE.MeshStandardMaterial({
+    color: layerColors.obstacleGeometry,
+    roughness: 0.72,
+    metalness: 0.02,
+    transparent: true,
+    opacity: 0.28,
+  }),
+  obstacleGeometryEdges: new THREE.LineBasicMaterial({
+    color: layerColors.obstacleGeometryEdges,
+    transparent: true,
+    opacity: 0.84,
+  }),
   reference: new THREE.LineBasicMaterial({ color: layerColors.referencePath }),
   localPlan: new THREE.LineBasicMaterial({ color: layerColors.localPlan }),
   executed: new THREE.LineBasicMaterial({ color: layerColors.executedPath }),
@@ -145,6 +161,7 @@ function loadReplay(nextReplay) {
   timeline.value = "0";
 
   clearAllLayers();
+  renderObstacleGeometry(replay.scene.obstacle_geometry);
   renderObstaclePoints(replay.scene.obstacle_points);
   renderReferencePath(replay.scene.reference_path);
   updateLayerVisibility();
@@ -184,6 +201,29 @@ function renderObstaclePoints(points) {
   }
   const geometry = new THREE.BufferGeometry().setFromPoints(points.map(worldToThree));
   layerGroups.obstacles.add(new THREE.Points(geometry, materials.obstacle));
+}
+
+function renderObstacleGeometry(obstacles) {
+  if (!Array.isArray(obstacles) || obstacles.length === 0) {
+    return;
+  }
+  for (const obstacle of obstacles) {
+    if (obstacle?.type !== "box" || !obstacle.size || !obstacle.center) {
+      continue;
+    }
+    const size = obstacle.size;
+    const geometry = new THREE.BoxGeometry(size[0], size[2], size[1]);
+    const mesh = new THREE.Mesh(geometry, materials.obstacleGeometry);
+    mesh.position.copy(worldToThree(obstacle.center));
+    layerGroups.obstacleGeometry.add(mesh);
+
+    const edges = new THREE.LineSegments(
+      new THREE.EdgesGeometry(geometry),
+      materials.obstacleGeometryEdges,
+    );
+    edges.position.copy(mesh.position);
+    layerGroups.obstacleGeometry.add(edges);
+  }
 }
 
 function renderReferencePath(path) {

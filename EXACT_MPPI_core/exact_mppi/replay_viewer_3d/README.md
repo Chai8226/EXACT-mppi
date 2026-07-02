@@ -12,4 +12,4 @@ To include bounded sampled MPPI rollouts:
 python -m exact_mppi.scenario_runner_3d --scenario narrow_gap_t_volume_3d --replay-json /tmp/narrow_gap_t_volume_3d_rollouts.replay.json --replay-rollouts --replay-max-rollouts 8
 ```
 
-Open `index.html` in a browser, choose the generated replay JSON file, then use playback, timeline scrubbing, speed, layer toggles, and camera modes to inspect the run. The viewer is static Three.js: it does not use a Python Web server, WebSocket, React, Vite, or realtime streaming.
+Open `index.html` in a browser, choose the generated replay JSON file, then use playback, timeline scrubbing, speed, layer toggles, and camera modes to inspect the run. Obstacle geometry and obstacle points are separate layers: geometry shows static scenario bodies, while points show the controller-facing obstacle samples. The viewer is static Three.js: it does not use a Python Web server, WebSocket, React, Vite, or realtime streaming.

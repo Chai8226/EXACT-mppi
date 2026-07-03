@@ -15,7 +15,7 @@ sensor:
   horizontal_fov_deg: 360.0
   vertical_min_deg: -7.0
   vertical_max_deg: 52.0
-  horizontal_samples: 36
+  horizontal_samples: 48
   vertical_samples: 8
   noise_std_m: 0.0
   dropout_probability: 0.0
@@ -40,10 +40,10 @@ reference_path:
 obstacles:
   geometry:
     - type: box
-      center: [1.6, -0.49, 0.0]
+      center: [1.6, -0.47, 0.0]
       size: [1.6, 0.10, 0.60]
     - type: box
-      center: [1.6, 0.49, 0.0]
+      center: [1.6, 0.47, 0.0]
       size: [1.6, 0.10, 0.60]
   points:
     - [0.9, -0.47, 0.0]

@@ -241,17 +241,11 @@ def run_3d_scenario(
     obstacle_geometry_config = _build_obstacle_geometry_config(obstacle_config)
     sensor_config = _build_sensor_config(cfg.get("sensor"))
     controller_config = dict(cfg.get("controller", {}))
-    legacy_observation_range = simulation.get("observation_range")
-    legacy_max_obstacle_points = simulation.get("max_obstacle_points")
     controller_point_budget = _controller_point_budget(
         controller_config,
-        sensor_config=sensor_config,
-        legacy_max_obstacle_points=legacy_max_obstacle_points,
     )
     _validate_observation_config(
         sensor_config=sensor_config,
-        legacy_observation_range=legacy_observation_range,
-        legacy_max_obstacle_points=legacy_max_obstacle_points,
     )
     if collect_rollouts:
         controller_config["debug"] = True
@@ -294,10 +288,7 @@ def run_3d_scenario(
         observed_point_cloud = _build_observed_point_cloud_for_step(
             sensor_config=sensor_config,
             obstacle_geometry_config=obstacle_geometry_config,
-            legacy_obstacle_points=obstacle_points,
             robot_pose=state,
-            legacy_observation_range=legacy_observation_range,
-            legacy_max_points=legacy_max_obstacle_points,
         )
         local_obstacles = transfer_from_global_to_local_frame(
             observed_point_cloud,
@@ -437,7 +428,6 @@ def build_3d_replay_data(
                 "type": "box_union",
                 "boxes": result.robot_volume_config,
             },
-            "sensor": result.sensor_config,
         },
         "frames": frames,
     }
@@ -595,39 +585,20 @@ def _build_observed_point_cloud_for_step(
     *,
     sensor_config: dict[str, Any] | None,
     obstacle_geometry_config: list[dict[str, Any]],
-    legacy_obstacle_points: np.ndarray,
     robot_pose: np.ndarray,
-    legacy_observation_range: Any,
-    legacy_max_points: Any,
 ) -> np.ndarray:
-    if sensor_config is not None:
-        return build_mid360_like_observed_point_cloud(
-            obstacle_geometry_config,
-            robot_pose,
-            sensor_config,
-        )
-
-    local_legacy_points = build_range_based_local_observation(
-        legacy_obstacle_points,
+    return build_mid360_like_observed_point_cloud(
+        obstacle_geometry_config,
         robot_pose,
-        observation_range=float(legacy_observation_range),
-        max_points=int(legacy_max_points),
-    )
-    return transfer_from_local_to_global_frame(local_legacy_points, robot_pose).astype(
-        np.float32
+        sensor_config,
     )
 
 
 def _controller_point_budget(
     controller_config: Mapping[str, Any],
-    *,
-    sensor_config: dict[str, Any] | None,
-    legacy_max_obstacle_points: Any,
 ) -> int:
     if "max_obs_num" in controller_config:
         point_budget = int(controller_config["max_obs_num"])
-    elif sensor_config is None and legacy_max_obstacle_points is not None:
-        point_budget = int(legacy_max_obstacle_points)
     else:
         raise ValueError(
             "MID-360-like 3D scenario config requires controller.max_obs_num "
@@ -641,17 +612,12 @@ def _controller_point_budget(
 def _validate_observation_config(
     *,
     sensor_config: dict[str, Any] | None,
-    legacy_observation_range: Any,
-    legacy_max_obstacle_points: Any,
 ) -> None:
     if sensor_config is not None:
         return
-    if legacy_observation_range is not None and legacy_max_obstacle_points is not None:
-        return
     raise ValueError(
         "3D scenario config requires a top-level sensor section for the "
-        "MID-360-like observation path. Legacy configs must provide "
-        "simulation.observation_range and simulation.max_obstacle_points."
+        "MID-360-like observation path."
     )
 
 

@@ -164,5 +164,5 @@ def test_static_3d_replay_viewer_documents_manual_smoke_check():
     assert "--replay-rollouts" in readme
     assert "index.html" in readme
     assert "narrow_gap_t_volume_3d" in readme
-    assert "Observed cloud" in readme
+    assert "Observed 3D point cloud" in readme
     assert "obstacle points" not in readme

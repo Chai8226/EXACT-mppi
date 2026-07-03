@@ -672,18 +672,21 @@ def test_static_3d_scenario_suite_configs_use_mid360_sensor_config():
 
         assert "observation_range" not in config.get("simulation", {})
         assert "max_obstacle_points" not in config.get("simulation", {})
-        assert config["sensor"] == {
+        expected_sensor = {
             "type": "mid360_like",
             "min_range_m": 0.1,
             "max_range_m": 10.0,
             "horizontal_fov_deg": 360.0,
             "vertical_min_deg": -7.0,
             "vertical_max_deg": 52.0,
-            "horizontal_samples": 36,
+            "horizontal_samples": (
+                48 if scenario_name == "narrow_gap_t_volume_3d" else 36
+            ),
             "vertical_samples": 8,
             "noise_std_m": 0.0,
             "dropout_probability": 0.0,
         }
+        assert config["sensor"] == expected_sensor
         assert int(config["controller"]["max_obs_num"]) > 0
 
 
@@ -773,6 +776,16 @@ def test_mid360_config_requires_controller_point_budget():
 def test_new_3d_observation_path_requires_sensor_config():
     config = load_builtin_scenario_config("narrow_gap_t_volume_3d")
     del config["sensor"]
+
+    with pytest.raises(ValueError, match="top-level sensor"):
+        run_3d_scenario(config)
+
+
+def test_new_3d_observation_path_rejects_legacy_observation_fields():
+    config = load_builtin_scenario_config("narrow_gap_t_volume_3d")
+    del config["sensor"]
+    config["simulation"]["observation_range"] = 1.8
+    config["simulation"]["max_obstacle_points"] = 64
 
     with pytest.raises(ValueError, match="top-level sensor"):
         run_3d_scenario(config)
@@ -889,7 +902,7 @@ def assert_replay_scene(replay, result):
     assert scene["obstacle_geometry"] == result.obstacle_geometry_config
     assert scene["robot_volume"]["type"] == "box_union"
     assert scene["robot_volume"]["boxes"] == result.robot_volume_config
-    assert scene["sensor"] == result.sensor_config
+    assert "sensor" not in scene
     assert replay["summary"] == result.summary
     json.dumps(replay, allow_nan=False)
 

@@ -84,6 +84,156 @@ def test_mid360_like_box_raycast_respects_range_and_vertical_fov():
     assert side_out_of_fov.shape == (0, 3)
 
 
+def test_mid360_like_box_raycast_respects_default_asymmetric_vertical_fov():
+    def point_at_elevation(elevation_deg):
+        elevation = np.deg2rad(elevation_deg)
+        return [float(np.cos(elevation)), 0.0, float(np.sin(elevation))]
+
+    sensor = {
+        "horizontal_samples": 1,
+        "vertical_samples": 2,
+    }
+    observed = build_mid360_like_observed_point_cloud(
+        [
+            {
+                "type": "box",
+                "center": point_at_elevation(-7.0),
+                "size": [0.08, 0.08, 0.08],
+            },
+            {
+                "type": "box",
+                "center": point_at_elevation(52.0),
+                "size": [0.08, 0.08, 0.08],
+            },
+        ],
+        np.asarray([0.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        sensor,
+    )
+    below_fov = build_mid360_like_observed_point_cloud(
+        [
+            {
+                "type": "box",
+                "center": point_at_elevation(-12.0),
+                "size": [0.04, 0.04, 0.04],
+            }
+        ],
+        np.asarray([0.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        sensor,
+    )
+    above_fov = build_mid360_like_observed_point_cloud(
+        [
+            {
+                "type": "box",
+                "center": point_at_elevation(57.0),
+                "size": [0.04, 0.04, 0.04],
+            }
+        ],
+        np.asarray([0.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        sensor,
+    )
+
+    assert observed.shape == (2, 3)
+    assert below_fov.shape == (0, 3)
+    assert above_fov.shape == (0, 3)
+
+
+def test_mid360_like_box_raycast_respects_default_range_limits():
+    sensor = {
+        "horizontal_samples": 1,
+        "vertical_samples": 1,
+        "vertical_min_deg": 0.0,
+        "vertical_max_deg": 0.0,
+    }
+
+    in_range = build_mid360_like_observed_point_cloud(
+        [{"type": "box", "center": [5.0, 0.0, 0.0], "size": [0.2, 0.2, 0.2]}],
+        np.asarray([0.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        sensor,
+    )
+    too_near = build_mid360_like_observed_point_cloud(
+        [{"type": "box", "center": [0.05, 0.0, 0.0], "size": [0.04, 0.04, 0.04]}],
+        np.asarray([0.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        sensor,
+    )
+    too_far = build_mid360_like_observed_point_cloud(
+        [{"type": "box", "center": [10.3, 0.0, 0.0], "size": [0.2, 0.2, 0.2]}],
+        np.asarray([0.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        sensor,
+    )
+
+    assert in_range.shape == (1, 3)
+    np.testing.assert_allclose(in_range[0], [4.9, 0.0, 0.0], atol=1e-6)
+    assert too_near.shape == (0, 3)
+    assert too_far.shape == (0, 3)
+
+
+def test_mid360_like_zero_noise_dropout_and_seed_are_deterministic():
+    geometry = [
+        {"type": "box", "center": [1.0, 0.0, 0.0], "size": [0.2, 0.2, 0.2]},
+    ]
+    sensor = {
+        "horizontal_samples": 1,
+        "vertical_samples": 1,
+        "vertical_min_deg": 0.0,
+        "vertical_max_deg": 0.0,
+        "noise_std_m": 0.0,
+        "dropout_probability": 0.0,
+        "seed": 123,
+    }
+
+    default_observed = build_mid360_like_observed_point_cloud(
+        geometry,
+        np.asarray([0.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        {
+            "horizontal_samples": 1,
+            "vertical_samples": 1,
+            "vertical_min_deg": 0.0,
+            "vertical_max_deg": 0.0,
+        },
+    )
+    first = build_mid360_like_observed_point_cloud(
+        geometry,
+        np.asarray([0.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        sensor,
+    )
+    second = build_mid360_like_observed_point_cloud(
+        geometry,
+        np.asarray([0.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        sensor,
+    )
+
+    np.testing.assert_allclose(first, default_observed)
+    np.testing.assert_allclose(second, first)
+
+
+def test_mid360_like_nonzero_noise_and_dropout_are_rejected():
+    base_sensor = {
+        "horizontal_samples": 1,
+        "vertical_samples": 1,
+        "vertical_min_deg": 0.0,
+        "vertical_max_deg": 0.0,
+    }
+
+    with pytest.raises(ValueError, match="noise is reserved"):
+        build_mid360_like_observed_point_cloud(
+            [],
+            np.asarray([0.0, 0.0, 0.0, 0.0], dtype=np.float32),
+            {
+                **base_sensor,
+                "noise_std_m": 0.01,
+            },
+        )
+    with pytest.raises(ValueError, match="dropout is reserved"):
+        build_mid360_like_observed_point_cloud(
+            [],
+            np.asarray([0.0, 0.0, 0.0, 0.0], dtype=np.float32),
+            {
+                **base_sensor,
+                "dropout_probability": 0.1,
+            },
+        )
+
+
 def test_mid360_like_box_raycast_keeps_nearest_occluding_hit_per_ray():
     observed = build_mid360_like_observed_point_cloud(
         [
@@ -499,6 +649,21 @@ def test_static_3d_scenario_suite_configs_do_not_define_dynamic_obstacles():
 
         assert "dynamic_obstacles" not in config
         assert "dynamic_obstacles" not in config.get("obstacles", {})
+
+
+def test_static_3d_scenario_descriptions_do_not_use_legacy_observation_language():
+    legacy_phrases = (
+        "range-based",
+        "static obstacle points",
+        "global obstacle points",
+        "local obstacle oracle",
+    )
+    for scenario_name in STATIC_3D_SCENARIOS:
+        config = load_builtin_scenario_config(scenario_name)
+        description = str(config.get("description", "")).lower()
+
+        for phrase in legacy_phrases:
+            assert phrase not in description
 
 
 def test_static_3d_scenario_suite_configs_use_mid360_sensor_config():

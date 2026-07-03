@@ -297,7 +297,7 @@ def test_mid360_like_runner_feeds_robot_local_yaw_frame_observations(monkeypatch
     json.dumps(replay, allow_nan=False)
 
 
-def test_mid360_like_replay_frame_pairs_observed_cloud_with_planning_pose(monkeypatch):
+def test_mid360_like_replay_frame_pairs_observed_cloud_with_robot_state(monkeypatch):
     class FakeController:
         def computeVelocityCommands(self, **_):
             return np.asarray([0.0, 0.5, 0.0, 0.0], dtype=np.float32)

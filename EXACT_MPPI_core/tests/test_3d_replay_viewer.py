@@ -1,4 +1,47 @@
+import json
+import shutil
+import subprocess
 from importlib import resources
+
+import pytest
+
+
+def representative_mid360_replay():
+    return {
+        "schema_version": 1,
+        "scene": {
+            "scenario": "viewer_smoke",
+            "reference_path": [[0.0, 0.0, 0.0, 0.0]],
+            "obstacle_geometry": [
+                {
+                    "type": "box",
+                    "center": [1.0, 0.0, 0.0],
+                    "size": [0.2, 0.2, 0.2],
+                }
+            ],
+            "robot_volume": {
+                "type": "box_union",
+                "boxes": [{"center": [0.0, 0.0, 0.0], "size": [0.4, 0.4, 0.4]}],
+            },
+        },
+        "frames": [
+            {
+                "frame_index": 0,
+                "state": [0.0, 0.0, 0.0, 0.0],
+                "executed_path": [[0.0, 0.0, 0.0, 0.0]],
+                "reference_window": [[0.0, 0.0, 0.0, 0.0]],
+                "optimal_trajectory": [[0.0, 0.0, 0.0, 0.0]],
+                "observed_point_cloud": [[0.9, 0.0, 0.0]],
+                "command": [0.0, 0.0, 0.0, 0.0],
+                "clearance": 0.5,
+                "goal_distance": 0.0,
+                "smoothness_telemetry": {
+                    "command_smoothness": {"rms_delta_norm": 0.0},
+                    "trajectory_smoothness": {"rms_second_difference_norm": 0.0},
+                },
+            }
+        ],
+    }
 
 
 def test_static_3d_replay_viewer_resources_are_packaged():
@@ -97,6 +140,132 @@ def test_static_3d_replay_viewer_renders_dynamic_observed_cloud_from_frame_data(
     assert "observedCloud" in app_js
     assert "replay.scene.obstacle_points" not in app_js
     assert "renderObservedPointCloud(fromFrame.observed_point_cloud)" in app_js
+
+
+def test_static_3d_replay_viewer_load_path_supports_representative_mid360_replay():
+    if shutil.which("node") is None:
+        pytest.skip("Node.js is required for the static replay viewer smoke test.")
+    replay = representative_mid360_replay()
+    viewer_files = resources.files("exact_mppi.replay_viewer_3d")
+    app_js = viewer_files.joinpath("app.js").read_text(encoding="utf-8")
+    executable_app = "\n".join(
+        line
+        for line in app_js.splitlines()
+        if not line.startswith("import ")
+    )
+    node_script = f"""
+class Vector3 {{
+  constructor(x = 0, y = 0, z = 0) {{ this.x = x; this.y = y; this.z = z; }}
+  set(x, y, z) {{ this.x = x; this.y = y; this.z = z; return this; }}
+  copy(other) {{ this.x = other.x; this.y = other.y; this.z = other.z; return this; }}
+  add(other) {{ this.x += other.x; this.y += other.y; this.z += other.z; return this; }}
+}}
+class Object3D {{
+  constructor() {{
+    this.children = [];
+    this.visible = true;
+    this.position = new Vector3();
+    this.rotation = {{ set() {{}} }};
+  }}
+  add(...children) {{ this.children.push(...children); }}
+  remove(child) {{ this.children = this.children.filter((item) => item !== child); }}
+}}
+class Geometry {{
+  setFromPoints(points) {{ this.points = points; return this; }}
+  dispose() {{}}
+}}
+class Group extends Object3D {{}}
+class Mesh extends Object3D {{
+  constructor(geometry, material) {{ super(); this.geometry = geometry; this.material = material; }}
+}}
+class Points extends Mesh {{}}
+class Line extends Mesh {{}}
+class LineSegments extends Mesh {{}}
+class PerspectiveCamera extends Object3D {{
+  constructor() {{ super(); this.up = new Vector3(); }}
+  lookAt() {{}}
+  updateProjectionMatrix() {{}}
+}}
+class Scene extends Group {{}}
+class DirectionalLight extends Object3D {{}}
+const THREE = {{
+  AmbientLight: class extends Object3D {{}},
+  BoxGeometry: class extends Geometry {{}},
+  BufferGeometry: Geometry,
+  DirectionalLight,
+  EdgesGeometry: class extends Geometry {{
+    constructor(source) {{ super(); this.source = source; }}
+  }},
+  Group,
+  Line,
+  LineBasicMaterial: class {{ constructor(options) {{ this.options = options; }} }},
+  LineSegments,
+  MathUtils: {{ clamp(value, min, max) {{ return Math.min(Math.max(value, min), max); }} }},
+  Mesh,
+  MeshStandardMaterial: class {{ constructor(options) {{ this.options = options; }} }},
+  PerspectiveCamera,
+  Points,
+  PointsMaterial: class {{ constructor(options) {{ this.options = options; }} }},
+  Scene,
+  Vector3,
+  WebGLRenderer: class {{
+    constructor(options) {{ this.domElement = options.canvas; }}
+    setPixelRatio() {{}}
+    setClearColor() {{}}
+    setSize() {{}}
+    render() {{}}
+  }},
+}};
+class OrbitControls {{
+  constructor() {{ this.target = new Vector3(); this.enabled = true; }}
+  update() {{}}
+}}
+const elements = new Map();
+function elementFor(id) {{
+  if (!elements.has(id)) {{
+    elements.set(id, {{
+      addEventListener() {{}},
+      checked: true,
+      textContent: "",
+      value: id === "speed" ? "1" : id === "camera-mode" ? "free" : "0",
+    }});
+  }}
+  return elements.get(id);
+}}
+globalThis.document = {{ getElementById: elementFor }};
+globalThis.window = {{
+  addEventListener() {{}},
+  devicePixelRatio: 1,
+  innerHeight: 720,
+  innerWidth: 1280,
+}};
+globalThis.requestAnimationFrame = () => {{}};
+{executable_app}
+loadReplay({json.dumps(replay)});
+if (layerGroups.obstacleGeometry.children.length !== 2) {{
+  throw new Error(`Expected obstacle geometry mesh and edges, got ${{layerGroups.obstacleGeometry.children.length}}`);
+}}
+if (layerGroups.observedCloud.children.length !== 1) {{
+  throw new Error(`Expected observed cloud points, got ${{layerGroups.observedCloud.children.length}}`);
+}}
+if (layerGroups.robot.children.length !== 2) {{
+  throw new Error(`Expected robot volume mesh and edges, got ${{layerGroups.robot.children.length}}`);
+}}
+if (metrics.scenario.textContent !== "viewer_smoke") {{
+  throw new Error(`Expected scenario metric to update, got ${{metrics.scenario.textContent}}`);
+}}
+"""
+
+    assert "obstacle_points" not in replay["scene"]
+    assert replay["scene"]["obstacle_geometry"]
+    assert replay["frames"][0]["observed_point_cloud"]
+    subprocess.run(
+        ["node", "--input-type=module"],
+        input=node_script,
+        text=True,
+        check=True,
+        capture_output=True,
+    )
 
 
 def test_static_3d_replay_viewer_validates_new_replay_schema():

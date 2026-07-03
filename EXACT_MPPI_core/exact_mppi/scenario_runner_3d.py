@@ -15,12 +15,10 @@ os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 if "JAX_PLATFORMS" not in os.environ and not Path("/dev/nvidiactl").exists():
     os.environ["JAX_PLATFORMS"] = "cpu"
 
-import jax
-import jax.numpy as jnp
 import numpy as np
 import yaml
 
-from exact_mppi.mppi_3d import BoxUnionVolume3D, MPPIController3D
+from exact_mppi.mppi_3d import MPPIController3D
 
 
 STATIC_3D_SCENARIOS = (
@@ -234,7 +232,6 @@ def run_3d_scenario(
     )
 
     robot_volume_config = _load_robot_volume_config(cfg)
-    robot_volume = BoxUnionVolume3D.from_config(robot_volume_config)
     reference_path = _build_reference_path(cfg["reference_path"])
     obstacle_config = cfg.get("obstacles", {})
     obstacle_points = _build_obstacle_points(obstacle_config)
@@ -268,10 +265,8 @@ def run_3d_scenario(
     rollout_history = []
     observed_point_cloud_history = []
     minimum_clearance = _minimum_state_clearance(
-        robot_volume,
         robot_volume_config,
         obstacle_geometry_config,
-        obstacle_points,
         state,
     )
     clearance_history = [minimum_clearance]
@@ -331,10 +326,8 @@ def run_3d_scenario(
             rollout_history.append(global_rollouts.copy())
 
         clearance = _minimum_state_clearance(
-            robot_volume,
             robot_volume_config,
             obstacle_geometry_config,
-            obstacle_points,
             state,
         )
         minimum_clearance = _merge_minimum_clearance(minimum_clearance, clearance)
@@ -384,9 +377,9 @@ def build_3d_replay_data(
     goal = result.global_reference_path[-1]
     frames = []
     for idx, command in enumerate(result.command_history):
-        state = result.state_history[idx + 1]
+        state = result.state_history[idx]
         frame_command_history = result.command_history[: idx + 1]
-        frame_state_history = result.state_history[: idx + 2]
+        frame_state_history = result.state_history[: idx + 1]
         frame = {
             "frame_index": idx,
             "state": state.tolist(),
@@ -396,7 +389,7 @@ def build_3d_replay_data(
             "optimal_trajectory": result.optimal_trajectory_history[idx].tolist(),
             "observed_point_cloud": result.observed_point_cloud_history[idx].tolist(),
             "command": command.tolist(),
-            "clearance": result.clearance_history[idx + 1],
+            "clearance": result.clearance_history[idx],
             "goal_distance": float(np.linalg.norm(state[:3] - goal[:3])),
             "smoothness_telemetry": compute_3d_smoothness_telemetry(
                 command_history=frame_command_history,
@@ -1206,10 +1199,8 @@ def _finite_vector3(value: Any, name: str) -> list[float]:
 
 
 def _minimum_state_clearance(
-    robot_volume: BoxUnionVolume3D,
     robot_volume_config: list[dict[str, Any]],
     obstacle_geometry_config: list[dict[str, Any]],
-    global_obstacle_points: np.ndarray,
     robot_pose: np.ndarray,
 ) -> float | None:
     if obstacle_geometry_config:
@@ -1218,16 +1209,7 @@ def _minimum_state_clearance(
             obstacle_geometry_config,
             robot_pose,
         )
-    if global_obstacle_points.size == 0:
-        return None
-    body_points = transfer_from_global_to_local_frame(
-        global_obstacle_points,
-        robot_pose,
-    )
-    distances = robot_volume.signed_distance(
-        jnp.asarray(body_points, dtype=jnp.float32)
-    )
-    return float(jax.device_get(jnp.min(distances)))
+    return None
 
 
 def _minimum_geometry_clearance(

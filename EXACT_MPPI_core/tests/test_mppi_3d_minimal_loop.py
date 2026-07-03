@@ -3,6 +3,7 @@ import math
 import jax.numpy as jnp
 import numpy as np
 
+import exact_mppi.mppi_3d.controller as mppi_3d_controller
 from exact_mppi.mppi_jax.controller import MPPIController
 from exact_mppi.mppi_3d import MPPIController3D, YawOnly3DHolonomicMotionModel
 from exact_mppi.mppi_3d.models import ControlSequence3D
@@ -89,3 +90,60 @@ def test_3d_controller_returns_finite_4d_command_in_no_obstacle_loop():
     optimal_trajectory = controller.getOptimalTrajectory()
     assert optimal_trajectory.shape == (12, 4)
     assert np.all(np.isfinite(optimal_trajectory))
+
+
+def test_3d_controller_packs_nearest_controller_obstacle_points_and_masks_padding(
+    monkeypatch,
+):
+    captured = {}
+
+    class FakeOptimizer:
+        def __init__(self, *_, **__):
+            pass
+
+        def evalControl(self, **kwargs):
+            captured["obstacle_points"] = np.asarray(kwargs["obstacle_points"])
+            captured["obstacle_points_mask"] = np.asarray(
+                kwargs["obstacle_points_mask"]
+            )
+            return (
+                jnp.zeros((4,), dtype=jnp.float32),
+                jnp.zeros((1, 4), dtype=jnp.float32),
+            )
+
+    monkeypatch.setattr(mppi_3d_controller, "Optimizer3D", FakeOptimizer)
+    controller = mppi_3d_controller.MPPIController3D(max_obs_num=3)
+
+    command = controller.computeVelocityCommands(
+        robot_pose=np.zeros(4, dtype=np.float32),
+        robot_speed=np.zeros(4, dtype=np.float32),
+        plan=np.zeros((1, 4), dtype=np.float32),
+        goal=np.zeros(4, dtype=np.float32),
+        obstacle_points=np.asarray(
+            [
+                [4.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.5, 0.0, 0.0],
+                [2.0, 0.0, 0.0],
+            ],
+            dtype=np.float32,
+        ),
+    )
+
+    assert command.shape == (4,)
+    np.testing.assert_allclose(captured["obstacle_points_mask"], [1.0, 1.0, 1.0])
+    packed_ranges = sorted(
+        float(np.dot(point, point)) for point in captured["obstacle_points"]
+    )
+    np.testing.assert_allclose(packed_ranges, [0.25, 1.0, 4.0])
+
+    controller.computeVelocityCommands(
+        robot_pose=np.zeros(4, dtype=np.float32),
+        robot_speed=np.zeros(4, dtype=np.float32),
+        plan=np.zeros((1, 4), dtype=np.float32),
+        goal=np.zeros(4, dtype=np.float32),
+        obstacle_points=np.asarray([[1.0, 0.0, 0.0]], dtype=np.float32),
+    )
+
+    np.testing.assert_allclose(captured["obstacle_points_mask"], [1.0, 0.0, 0.0])
+    np.testing.assert_allclose(captured["obstacle_points"][1:], 0.0)

@@ -297,6 +297,33 @@ def test_mid360_like_runner_feeds_robot_local_yaw_frame_observations(monkeypatch
     json.dumps(replay, allow_nan=False)
 
 
+def test_mid360_like_replay_frame_pairs_observed_cloud_with_planning_pose(monkeypatch):
+    class FakeController:
+        def computeVelocityCommands(self, **_):
+            return np.asarray([0.0, 0.5, 0.0, 0.0], dtype=np.float32)
+
+        def getOptimalTrajectory(self):
+            return None
+
+    monkeypatch.setattr(
+        scenario_runner_3d,
+        "_build_controller",
+        lambda *_, **__: FakeController(),
+    )
+    config = make_mid360_tracer_bullet_config()
+
+    result = run_3d_scenario(config)
+    replay = build_3d_replay_data(result)
+
+    assert result.step_count == 1
+    assert replay["frames"][0]["state"] == result.state_history[0].tolist()
+    assert replay["frames"][0]["executed_path"] == result.state_history[:1].tolist()
+    np.testing.assert_allclose(
+        replay["frames"][0]["observed_point_cloud"],
+        [[1.0, 2.8, 0.0]],
+    )
+
+
 def test_open_track_3d_runs_headlessly_from_builtin_config():
     config = load_builtin_scenario_config("open_track_3d")
 
@@ -721,7 +748,7 @@ def test_migrated_builtin_config_does_not_need_legacy_points_for_perception(
     assert captured_obstacle_points[0].shape[0] > 0
 
 
-def test_geometry_truth_reports_collision_when_observed_cloud_is_empty(monkeypatch):
+def test_obstacle_geometry_reports_collision_when_observed_cloud_is_empty(monkeypatch):
     class FakeController:
         def computeVelocityCommands(self, **_):
             return np.zeros(4, dtype=np.float32)
@@ -763,6 +790,38 @@ def test_geometry_truth_reports_collision_when_observed_cloud_is_empty(monkeypat
     assert np.isfinite(replay["frames"][0]["clearance"])
     assert report["aggregate"]["collision_count"] == 1
     assert report["aggregate"]["collided_scenarios"] == ["mid360_tracer_bullet"]
+
+
+def test_mid360_like_metrics_do_not_fall_back_to_legacy_obstacle_points(monkeypatch):
+    class FakeController:
+        def computeVelocityCommands(self, **_):
+            return np.zeros(4, dtype=np.float32)
+
+        def getOptimalTrajectory(self):
+            return None
+
+    monkeypatch.setattr(
+        scenario_runner_3d,
+        "_build_controller",
+        lambda *_, **__: FakeController(),
+    )
+
+    config = make_mid360_tracer_bullet_config()
+    config["obstacles"] = {
+        "geometry": [],
+        "points": [
+            [1.0, 2.0, 0.0],
+        ],
+    }
+
+    result = run_3d_scenario(config)
+    replay = build_3d_replay_data(result)
+
+    assert result.global_obstacle_points.shape == (1, 3)
+    assert result.observed_point_cloud_history[0].shape == (0, 3)
+    assert result.minimum_clearance is None
+    assert result.collided is False
+    assert replay["frames"][0]["clearance"] is None
 
 
 def test_mid360_config_requires_controller_point_budget():
@@ -917,8 +976,8 @@ def assert_replay_frames(replay, result, *, require_clearance):
 
     for frame_index, frame in enumerate(frames):
         assert frame["frame_index"] == frame_index
-        assert frame["state"] == result.state_history[frame_index + 1].tolist()
-        assert frame["executed_path"] == result.state_history[: frame_index + 2].tolist()
+        assert frame["state"] == result.state_history[frame_index].tolist()
+        assert frame["executed_path"] == result.state_history[: frame_index + 1].tolist()
         assert frame["command"] == result.command_history[frame_index].tolist()
         assert frame["reference_window"] == result.local_plan_history[frame_index].tolist()
         assert frame["local_plan"] == result.local_plan_history[frame_index].tolist()
@@ -976,15 +1035,12 @@ def assert_replay_rollouts_are_finite_and_world_frame(replay):
 
 
 def recompute_minimum_clearance_from_result_volume(result):
-    volume = BoxUnionVolume3D.from_config(result.robot_volume_config)
     clearances = []
     for state in result.state_history:
         clearances.append(
             scenario_runner_3d._minimum_state_clearance(
-                volume,
                 result.robot_volume_config,
                 result.obstacle_geometry_config,
-                result.global_obstacle_points,
                 state,
             )
         )

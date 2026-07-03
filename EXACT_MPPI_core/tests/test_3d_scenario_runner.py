@@ -533,6 +533,41 @@ def test_static_3d_scenario_suite_contains_first_static_scenarios():
     )
 
 
+def test_xyz_yaw_showcase_3d_is_manual_builtin_scenario():
+    config = load_builtin_scenario_config("xyz_yaw_showcase_3d")
+    definition = build_3d_scenario_definition(config)
+
+    assert "xyz_yaw_showcase_3d" not in STATIC_3D_SCENARIOS
+    assert definition.name == "xyz_yaw_showcase_3d"
+    assert "Manual Web replay showcase" in config["description"]
+    assert definition.reference_path.shape == (120, 4)
+    assert np.ptp(definition.reference_path[:, 0]) > 3.5
+    assert np.ptp(definition.reference_path[:, 1]) > 0.7
+    assert np.ptp(definition.reference_path[:, 2]) > 0.5
+    assert np.ptp(definition.reference_path[:, 3]) > 1.0
+    assert len(definition.robot_volume_config) == 2
+    assert_t_volume_has_nonconvex_notch(definition.robot_volume_config)
+    assert len(definition.obstacle_geometry_config) >= 8
+
+
+def test_xyz_yaw_showcase_3d_exports_web_replay_scene():
+    config = load_builtin_scenario_config("xyz_yaw_showcase_3d")
+    result = run_3d_scenario(config)
+
+    replay = build_3d_replay_data(result)
+
+    assert_standard_summary(result.summary, "xyz_yaw_showcase_3d")
+    assert result.reached_goal is True
+    assert result.collided is False
+    assert result.minimum_clearance is not None
+    assert result.minimum_clearance >= config["simulation"]["clearance_margin"]
+    assert_replay_scene(replay, result)
+    assert_replay_frames(replay, result, require_clearance=True)
+    assert replay["scene"]["scenario"] == "xyz_yaw_showcase_3d"
+    assert len(replay["scene"]["obstacle_geometry"]) >= 8
+    assert replay["scene"]["robot_volume"]["boxes"] == result.robot_volume_config
+
+
 def test_new_static_3d_scenarios_run_headlessly_with_standard_summaries():
     for scenario_name in (
         "vertical_gate_3d",

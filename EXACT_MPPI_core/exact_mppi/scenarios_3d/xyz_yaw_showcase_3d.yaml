@@ -1,0 +1,107 @@
+name: xyz_yaw_showcase_3d
+description: Manual Web replay showcase for yaw-only x/y/z/yaw motion with static obstacle geometry.
+
+simulation:
+  model_dt: 0.15
+  max_steps: 110
+  goal_tolerance: 0.32
+  clearance_margin: 0.04
+  reference_window_lookahead_distance: 1.2
+
+sensor:
+  type: mid360_like
+  min_range_m: 0.1
+  max_range_m: 10.0
+  horizontal_fov_deg: 360.0
+  vertical_min_deg: -7.0
+  vertical_max_deg: 52.0
+  horizontal_samples: 48
+  vertical_samples: 8
+  noise_std_m: 0.0
+  dropout_probability: 0.0
+
+robot_volume:
+  type: box_union
+  boxes:
+    - center: [-0.08, 0.0, 0.0]
+      size: [0.68, 0.22, 0.30]
+    - center: [0.22, 0.0, 0.0]
+      size: [0.22, 0.62, 0.30]
+
+reference_path:
+  point_count: 120
+  waypoints:
+    - [0.0, -0.55, 0.00, 0.00]
+    - [0.65, -0.30, 0.15, 0.20]
+    - [1.20, 0.10, 0.55, 0.70]
+    - [1.90, 0.45, 0.62, 1.15]
+    - [2.55, 0.15, 0.35, 0.70]
+    - [3.20, -0.35, 0.10, 0.15]
+    - [4.00, -0.05, 0.00, -0.25]
+
+obstacles:
+  geometry:
+    - type: box
+      center: [0.80, -1.05, 0.18]
+      size: [0.80, 0.12, 0.48]
+    - type: box
+      center: [0.95, 0.36, 0.35]
+      size: [0.56, 0.12, 0.70]
+    - type: box
+      center: [1.55, -0.52, 0.12]
+      size: [0.14, 0.46, 0.24]
+    - type: box
+      center: [1.55, 0.75, 0.42]
+      size: [0.14, 0.44, 0.60]
+    - type: box
+      center: [2.05, -0.02, 0.98]
+      size: [0.70, 0.95, 0.12]
+    - type: box
+      center: [2.15, 0.86, 0.34]
+      size: [0.90, 0.12, 0.56]
+    - type: box
+      center: [2.75, -0.86, 0.25]
+      size: [0.70, 0.12, 0.50]
+    - type: box
+      center: [3.10, 0.72, 0.22]
+      size: [0.16, 0.42, 0.44]
+    - type: box
+      center: [3.45, -0.98, 0.18]
+      size: [0.58, 0.12, 0.36]
+    - type: box
+      center: [3.60, 0.72, 0.16]
+      size: [0.50, 0.12, 0.32]
+
+controller:
+  time_steps: 12
+  max_obs_num: 80
+  batch_size: 72
+  iteration_count: 2
+  seed: 53
+  vx_max: 1.15
+  vx_min: -0.2
+  vy_max: 0.60
+  vz_max: 1.0
+  wz_max: 1.2
+  vx_std: 0.25
+  vy_std: 0.20
+  vz_std: 0.24
+  wz_std: 0.18
+  temperature: 0.25
+  goal_weight: 6.4
+  path_weight: 8.0
+  obstacles_repulsion_weight: 0.7
+  obstacles_critical_weight: 38.0
+  obstacles_repulsion_distance: 0.55
+  GoalAngleCritic:
+    enabled: true
+    cost_weight: 3.5
+    threshold_to_consider: 1.0
+  PreferForwardCritic:
+    enabled: true
+    cost_weight: 0.5
+  VelocityDeadbandCritic:
+    enabled: false
+  TwirlingCritic:
+    enabled: true
+    cost_weight: 0.08

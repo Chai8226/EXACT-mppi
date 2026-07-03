@@ -548,6 +548,8 @@ def test_xyz_yaw_showcase_3d_is_manual_builtin_scenario():
     assert len(definition.robot_volume_config) == 2
     assert_t_volume_has_nonconvex_notch(definition.robot_volume_config)
     assert len(definition.obstacle_geometry_config) >= 8
+    assert "GoalYawCritic" in config["controller"]
+    assert "GoalAngleCritic" not in config["controller"]
 
 
 def test_xyz_yaw_showcase_3d_exports_web_replay_scene():
@@ -555,12 +557,19 @@ def test_xyz_yaw_showcase_3d_exports_web_replay_scene():
     result = run_3d_scenario(config)
 
     replay = build_3d_replay_data(result)
+    reference_yaw_range = np.ptp(np.unwrap(result.global_reference_path[:, 3]))
+    executed_yaw_range = np.ptp(np.unwrap(result.state_history[:, 3]))
+    zero_yaw_minimum_clearance = minimum_clearance_with_fixed_yaw(result, yaw=0.0)
 
     assert_standard_summary(result.summary, "xyz_yaw_showcase_3d")
     assert result.reached_goal is True
     assert result.collided is False
     assert result.minimum_clearance is not None
     assert result.minimum_clearance >= config["simulation"]["clearance_margin"]
+    assert reference_yaw_range >= 1.1
+    assert executed_yaw_range >= 0.75
+    assert zero_yaw_minimum_clearance is not None
+    assert zero_yaw_minimum_clearance < config["simulation"]["clearance_margin"]
     assert_replay_scene(replay, result)
     assert_replay_frames(replay, result, require_clearance=True)
     assert replay["scene"]["scenario"] == "xyz_yaw_showcase_3d"
@@ -1137,6 +1146,26 @@ def recompute_minimum_clearance_from_result_volume(result):
             )
         )
     return min(clearances)
+
+
+def minimum_clearance_with_fixed_yaw(result, yaw):
+    clearances = []
+    for state in result.state_history:
+        fixed_yaw_state = state.copy()
+        fixed_yaw_state[3] = yaw
+        clearances.append(
+            scenario_runner_3d._minimum_state_clearance(
+                result.robot_volume_config,
+                result.obstacle_geometry_config,
+                fixed_yaw_state,
+            )
+        )
+    finite_clearances = [
+        clearance for clearance in clearances if clearance is not None
+    ]
+    if not finite_clearances:
+        return None
+    return min(finite_clearances)
 
 
 def config_time_steps(config):

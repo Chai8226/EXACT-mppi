@@ -1,5 +1,5 @@
 name: xyz_yaw_showcase_3d
-description: Manual Web replay showcase for yaw-only x/y/z/yaw motion with static obstacle geometry.
+description: Manual Web replay showcase for yaw-only x/y/z/yaw motion through an asymmetric yaw gate.
 
 simulation:
   model_dt: 0.15
@@ -36,8 +36,8 @@ reference_path:
     - [1.20, 0.10, 0.55, 0.70]
     - [1.90, 0.45, 0.62, 1.15]
     - [2.55, 0.15, 0.35, 0.70]
-    - [3.20, -0.35, 0.10, 0.15]
-    - [4.00, -0.05, 0.00, -0.25]
+    - [3.20, -0.35, 0.10, 0.45]
+    - [4.00, -0.05, 0.00, 1.15]
 
 obstacles:
   geometry:
@@ -45,11 +45,14 @@ obstacles:
       center: [0.80, -1.05, 0.18]
       size: [0.80, 0.12, 0.48]
     - type: box
+      center: [0.435, -0.344, 0.37]
+      size: [0.06, 0.06, 0.28]
+    - type: box
       center: [0.95, 0.36, 0.35]
       size: [0.56, 0.12, 0.70]
     - type: box
-      center: [1.55, -0.52, 0.12]
-      size: [0.14, 0.46, 0.24]
+      center: [1.55, -0.83, 0.12]
+      size: [0.14, 0.30, 0.24]
     - type: box
       center: [1.55, 0.75, 0.42]
       size: [0.14, 0.44, 0.60]
@@ -86,17 +89,17 @@ controller:
   vx_std: 0.25
   vy_std: 0.20
   vz_std: 0.24
-  wz_std: 0.18
+  wz_std: 0.28
   temperature: 0.25
   goal_weight: 6.4
   path_weight: 8.0
   obstacles_repulsion_weight: 0.7
   obstacles_critical_weight: 38.0
   obstacles_repulsion_distance: 0.55
-  GoalAngleCritic:
+  GoalYawCritic:
     enabled: true
-    cost_weight: 3.5
-    threshold_to_consider: 1.0
+    cost_weight: 5.0
+    threshold_to_consider: 10.0
   PreferForwardCritic:
     enabled: true
     cost_weight: 0.5
@@ -104,4 +107,4 @@ controller:
     enabled: false
   TwirlingCritic:
     enabled: true
-    cost_weight: 0.08
+    cost_weight: 0.02

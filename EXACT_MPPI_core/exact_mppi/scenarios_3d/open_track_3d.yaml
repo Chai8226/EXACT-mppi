@@ -35,7 +35,6 @@ reference_path:
 
 obstacles:
   geometry: []
-  points: []
 
 controller:
   time_steps: 12

@@ -6,7 +6,9 @@ import numpy as np
 import pytest
 
 import exact_mppi.scenario_runner_3d as scenario_runner_3d
+from exact_mppi.geometry_observation_3d import observe_3d_geometry
 from exact_mppi.mppi_3d import BoxUnionVolume3D
+from exact_mppi.scenario_definition_3d import build_3d_scenario_definition
 from exact_mppi.scenario_runner_3d import (
     STATIC_3D_SCENARIOS,
     ScenarioRunResult3D,
@@ -253,6 +255,28 @@ def test_mid360_like_box_raycast_keeps_nearest_occluding_hit_per_ray():
     np.testing.assert_allclose(observed[0], [0.6, 0.0, 0.0], atol=1e-6)
 
 
+def test_3d_geometry_observation_returns_world_local_and_clearance():
+    config = make_mid360_tracer_bullet_config()
+
+    observation = observe_3d_geometry(
+        obstacle_geometry_config=config["obstacles"]["geometry"],
+        robot_volume_config=config["robot_volume"]["boxes"],
+        robot_pose=np.asarray([1.0, 2.0, 0.0, np.pi / 2.0], dtype=np.float32),
+        sensor_config=config["sensor"],
+    )
+
+    np.testing.assert_allclose(
+        observation.observed_point_cloud,
+        [[1.0, 2.8, 0.0]],
+    )
+    np.testing.assert_allclose(
+        observation.local_observation_points,
+        [[0.8, 0.0, 0.0]],
+        atol=1e-6,
+    )
+    assert observation.clearance == pytest.approx(0.625)
+
+
 def test_mid360_like_runner_feeds_robot_local_yaw_frame_observations(monkeypatch):
     captured_obstacle_points = []
 
@@ -345,7 +369,7 @@ def test_open_track_3d_runs_headlessly_from_builtin_config():
     assert result.state_history.shape[1] == 4
     assert result.command_history.shape[1] == 4
     assert result.global_reference_path.shape[1] == 4
-    assert result.global_obstacle_points.shape[1] == 3
+    assert result.obstacle_geometry_config == []
 
 
 def test_open_track_3d_builtin_config_is_deterministic():
@@ -379,7 +403,7 @@ def test_narrow_gap_t_volume_3d_runs_with_authoritative_robot_volume():
     assert config["robot_volume"]["type"] == "box_union"
     assert result.robot_volume_config == config["robot_volume"]["boxes"]
     assert len(result.robot_volume_config) == 2
-    assert result.global_obstacle_points.shape[0] > 0
+    assert len(result.obstacle_geometry_config) == 2
     assert_t_volume_has_nonconvex_notch(result.robot_volume_config)
 
 
@@ -520,7 +544,7 @@ def test_new_static_3d_scenarios_run_headlessly_with_standard_summaries():
         result = run_3d_scenario(config)
 
         assert_standard_summary(result.summary, scenario_name)
-        assert result.global_obstacle_points.shape[0] > 0
+        assert len(result.obstacle_geometry_config) > 0
 
 
 def test_static_3d_scenario_suite_runs_selected_scenarios_in_order():
@@ -699,6 +723,7 @@ def test_static_3d_scenario_suite_configs_use_mid360_sensor_config():
 
         assert "observation_range" not in config.get("simulation", {})
         assert "max_obstacle_points" not in config.get("simulation", {})
+        assert "points" not in config.get("obstacles", {})
         expected_sensor = {
             "type": "mid360_like",
             "min_range_m": 0.1,
@@ -715,6 +740,66 @@ def test_static_3d_scenario_suite_configs_use_mid360_sensor_config():
         }
         assert config["sensor"] == expected_sensor
         assert int(config["controller"]["max_obs_num"]) > 0
+
+
+def test_3d_scenario_definition_normalizes_builtin_config():
+    config = load_builtin_scenario_config("narrow_gap_t_volume_3d")
+
+    definition = build_3d_scenario_definition(config)
+
+    assert definition.name == "narrow_gap_t_volume_3d"
+    assert definition.model_dt == config["simulation"]["model_dt"]
+    assert definition.max_steps == config["simulation"]["max_steps"]
+    assert definition.goal_tolerance == config["simulation"]["goal_tolerance"]
+    assert definition.clearance_margin == config["simulation"]["clearance_margin"]
+    assert definition.reference_path.shape == (96, 4)
+    assert definition.robot_volume_config == config["robot_volume"]["boxes"]
+    assert definition.obstacle_geometry_config == config["obstacles"]["geometry"]
+    assert definition.sensor_config == {
+        **config["sensor"],
+        "seed": None,
+    }
+    assert definition.controller_point_budget == config["controller"]["max_obs_num"]
+
+
+def test_3d_scenario_definition_rejects_legacy_obstacle_points():
+    config = make_mid360_tracer_bullet_config()
+    config["obstacles"]["points"] = [[1.0, 2.0, 0.0]]
+
+    with pytest.raises(ValueError, match="obstacles.points"):
+        build_3d_scenario_definition(config)
+
+
+def test_3d_scenario_definition_rejects_invalid_obstacle_geometry():
+    config = make_mid360_tracer_bullet_config()
+    config["obstacles"]["geometry"] = [
+        {"type": "sphere", "center": [1.0, 2.0, 0.0], "size": [0.2, 0.2, 0.2]},
+    ]
+
+    with pytest.raises(ValueError, match="Unsupported 3D obstacle geometry type"):
+        build_3d_scenario_definition(config)
+
+    config = make_mid360_tracer_bullet_config()
+    config["obstacles"]["geometry"] = [
+        {"type": "box", "center": [1.0, 2.0], "size": [0.2, 0.2, 0.2]},
+    ]
+
+    with pytest.raises(ValueError, match="center"):
+        build_3d_scenario_definition(config)
+
+
+def test_3d_scenario_definition_rejects_invalid_reference_path():
+    config = make_mid360_tracer_bullet_config()
+    config["reference_path"]["waypoints"] = [[0.0, 0.0, 0.0]]
+
+    with pytest.raises(ValueError, match="waypoints"):
+        build_3d_scenario_definition(config)
+
+    config = make_mid360_tracer_bullet_config()
+    config["reference_path"]["point_count"] = 1
+
+    with pytest.raises(ValueError, match="point_count"):
+        build_3d_scenario_definition(config)
 
 
 def test_migrated_builtin_config_does_not_need_legacy_points_for_perception(
@@ -739,11 +824,9 @@ def test_migrated_builtin_config_does_not_need_legacy_points_for_perception(
     )
     config = load_builtin_scenario_config("narrow_gap_t_volume_3d")
     config["simulation"]["max_steps"] = 1
-    config["obstacles"].pop("points", None)
 
     result = run_3d_scenario(config)
 
-    assert result.global_obstacle_points.shape == (0, 3)
     assert result.observed_point_cloud_history[0].shape[0] > 0
     assert captured_obstacle_points[0].shape[0] > 0
 
@@ -773,15 +856,13 @@ def test_obstacle_geometry_reports_collision_when_observed_cloud_is_empty(monkey
                 "center": [1.0, 2.0, 0.0],
                 "size": [0.2, 0.2, 0.2],
             }
-        ],
-        "points": [],
+        ]
     }
 
     result = run_3d_scenario(config)
     replay = build_3d_replay_data(result)
     report = build_3d_baseline_report([result])
 
-    assert result.global_obstacle_points.shape == (0, 3)
     assert result.observed_point_cloud_history[0].shape == (0, 3)
     assert result.minimum_clearance is not None
     assert result.minimum_clearance < 0.0
@@ -792,36 +873,12 @@ def test_obstacle_geometry_reports_collision_when_observed_cloud_is_empty(monkey
     assert report["aggregate"]["collided_scenarios"] == ["mid360_tracer_bullet"]
 
 
-def test_mid360_like_metrics_do_not_fall_back_to_legacy_obstacle_points(monkeypatch):
-    class FakeController:
-        def computeVelocityCommands(self, **_):
-            return np.zeros(4, dtype=np.float32)
-
-        def getOptimalTrajectory(self):
-            return None
-
-    monkeypatch.setattr(
-        scenario_runner_3d,
-        "_build_controller",
-        lambda *_, **__: FakeController(),
-    )
-
+def test_mid360_like_config_rejects_legacy_obstacle_points():
     config = make_mid360_tracer_bullet_config()
-    config["obstacles"] = {
-        "geometry": [],
-        "points": [
-            [1.0, 2.0, 0.0],
-        ],
-    }
+    config["obstacles"]["points"] = [[1.0, 2.0, 0.0]]
 
-    result = run_3d_scenario(config)
-    replay = build_3d_replay_data(result)
-
-    assert result.global_obstacle_points.shape == (1, 3)
-    assert result.observed_point_cloud_history[0].shape == (0, 3)
-    assert result.minimum_clearance is None
-    assert result.collided is False
-    assert replay["frames"][0]["clearance"] is None
+    with pytest.raises(ValueError, match="obstacles.points"):
+        run_3d_scenario(config)
 
 
 def test_mid360_config_requires_controller_point_budget():
@@ -1119,7 +1176,6 @@ def make_minimal_result(
             [[0.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
             dtype=np.float32,
         ),
-        global_obstacle_points=np.empty((0, 3), dtype=np.float32),
         observed_point_cloud_history=[
             np.empty((0, 3), dtype=np.float32),
             np.empty((0, 3), dtype=np.float32),
@@ -1131,6 +1187,19 @@ def make_minimal_result(
                 "size": [0.4, 0.3, 0.2],
             }
         ],
+        sensor_config={
+            "type": "mid360_like",
+            "min_range_m": 0.1,
+            "max_range_m": 10.0,
+            "horizontal_fov_deg": 360.0,
+            "vertical_min_deg": -7.0,
+            "vertical_max_deg": 52.0,
+            "horizontal_samples": 36,
+            "vertical_samples": 8,
+            "noise_std_m": 0.0,
+            "dropout_probability": 0.0,
+            "seed": None,
+        },
     )
 
 
@@ -1175,10 +1244,7 @@ def make_mid360_tracer_bullet_config():
                     "center": [1.0, 2.9, 0.0],
                     "size": [0.2, 0.2, 0.2],
                 }
-            ],
-            "points": [
-                [99.0, 0.0, 0.0],
-            ],
+            ]
         },
         "controller": {
             "time_steps": 2,

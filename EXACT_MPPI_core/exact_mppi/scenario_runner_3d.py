@@ -18,7 +18,23 @@ if "JAX_PLATFORMS" not in os.environ and not Path("/dev/nvidiactl").exists():
 import numpy as np
 import yaml
 
+from exact_mppi.geometry_observation_3d import (
+    build_mid360_like_observed_point_cloud as _build_mid360_like_observed_point_cloud,
+    minimum_geometry_clearance,
+    minimum_state_clearance,
+    observe_3d_geometry,
+)
 from exact_mppi.mppi_3d import MPPIController3D
+from exact_mppi.scenario_definition_3d import (
+    DEFAULT_REFERENCE_WINDOW_LOOKAHEAD_DISTANCE,
+    build_3d_obstacle_geometry_config,
+    build_3d_reference_path,
+    build_3d_scenario_definition,
+    build_3d_sensor_config,
+    controller_point_budget,
+    finite_vector3,
+    load_3d_robot_volume_config,
+)
 
 
 STATIC_3D_SCENARIOS = (
@@ -31,7 +47,6 @@ STATIC_3D_SCENARIOS = (
 BASELINE_SMOOTHNESS_REFERENCE_SCENARIO = "open_track_3d"
 BASELINE_SMOOTHNESS_MULTIPLIER = 2.0
 BASELINE_SMOOTHNESS_EPSILON = 1e-6
-DEFAULT_REFERENCE_WINDOW_LOOKAHEAD_DISTANCE = 1.2
 
 
 @dataclass(frozen=True)
@@ -50,11 +65,10 @@ class ScenarioRunResult3D:
     rollout_history: list[np.ndarray]
     clearance_history: list[float | None]
     global_reference_path: np.ndarray
-    global_obstacle_points: np.ndarray
     observed_point_cloud_history: list[np.ndarray]
     obstacle_geometry_config: list[dict[str, Any]]
     robot_volume_config: list[dict[str, Any]]
-    sensor_config: dict[str, Any] | None = None
+    sensor_config: dict[str, Any]
 
     @property
     def summary(self) -> dict[str, Any]:
@@ -217,46 +231,21 @@ def run_3d_scenario(
     collect_rollouts: bool = False,
     max_rollouts: int = 8,
 ) -> ScenarioRunResult3D:
-    cfg = copy.deepcopy(dict(config))
-    scenario_name = str(cfg["name"])
-    simulation = dict(cfg.get("simulation", {}))
-    model_dt = float(simulation.get("model_dt", 0.15))
-    max_steps = int(simulation.get("max_steps", 80))
-    goal_tolerance = float(simulation.get("goal_tolerance", 0.28))
-    clearance_margin = float(simulation.get("clearance_margin", 0.04))
-    reference_window_lookahead_distance = float(
-        simulation.get(
-            "reference_window_lookahead_distance",
-            DEFAULT_REFERENCE_WINDOW_LOOKAHEAD_DISTANCE,
-        )
-    )
-
-    robot_volume_config = _load_robot_volume_config(cfg)
-    reference_path = _build_reference_path(cfg["reference_path"])
-    obstacle_config = cfg.get("obstacles", {})
-    obstacle_points = _build_obstacle_points(obstacle_config)
-    obstacle_geometry_config = _build_obstacle_geometry_config(obstacle_config)
-    sensor_config = _build_sensor_config(cfg.get("sensor"))
-    controller_config = dict(cfg.get("controller", {}))
-    controller_point_budget = _controller_point_budget(
-        controller_config,
-    )
-    _validate_observation_config(
-        sensor_config=sensor_config,
-    )
+    definition = build_3d_scenario_definition(config)
+    controller_config = copy.deepcopy(definition.controller_config)
     if collect_rollouts:
         controller_config["debug"] = True
     controller = _build_controller(
         controller_config,
-        model_dt=model_dt,
-        controller_point_budget=controller_point_budget,
-        robot_volume_config=robot_volume_config,
-        clearance_margin=clearance_margin,
+        model_dt=definition.model_dt,
+        controller_point_budget=definition.controller_point_budget,
+        robot_volume_config=definition.robot_volume_config,
+        clearance_margin=definition.clearance_margin,
     )
     time_steps = int(controller_config.get("time_steps", 12))
 
-    goal = reference_path[-1].copy()
-    state = reference_path[0].copy()
+    goal = definition.reference_path[-1].copy()
+    state = definition.reference_path[0].copy()
     speed = np.zeros(4, dtype=np.float32)
     state_history = [state.copy()]
     command_history = []
@@ -264,31 +253,32 @@ def run_3d_scenario(
     optimal_trajectory_history = []
     rollout_history = []
     observed_point_cloud_history = []
-    minimum_clearance = _minimum_state_clearance(
-        robot_volume_config,
-        obstacle_geometry_config,
+    minimum_clearance = minimum_state_clearance(
+        definition.robot_volume_config,
+        definition.obstacle_geometry_config,
         state,
     )
     clearance_history = [minimum_clearance]
 
-    for _ in range(max_steps):
+    for _ in range(definition.max_steps):
         global_plan = select_global_plan(
-            reference_path,
+            definition.reference_path,
             state,
             time_steps,
-            reference_window_lookahead_distance=reference_window_lookahead_distance,
+            reference_window_lookahead_distance=(
+                definition.reference_window_lookahead_distance
+            ),
         )
         local_plan = transfer_from_global_to_local_frame(global_plan, state)
         local_goal = transfer_from_global_to_local_frame(goal[None, :], state)[0]
-        observed_point_cloud = _build_observed_point_cloud_for_step(
-            sensor_config=sensor_config,
-            obstacle_geometry_config=obstacle_geometry_config,
+        geometry_observation = observe_3d_geometry(
+            sensor_config=definition.sensor_config,
+            obstacle_geometry_config=definition.obstacle_geometry_config,
+            robot_volume_config=definition.robot_volume_config,
             robot_pose=state,
         )
-        local_obstacles = transfer_from_global_to_local_frame(
-            observed_point_cloud,
-            state,
-        ).astype(np.float32)
+        observed_point_cloud = geometry_observation.observed_point_cloud
+        local_obstacles = geometry_observation.local_observation_points
 
         command = controller.computeVelocityCommands(
             robot_pose=np.zeros(4, dtype=np.float32),
@@ -315,7 +305,7 @@ def run_3d_scenario(
                 max_rollouts=max_rollouts,
             )
 
-        state = integrate_yaw_only_3d_state(state, command, model_dt)
+        state = integrate_yaw_only_3d_state(state, command, definition.model_dt)
         speed = command
         state_history.append(state.copy())
         command_history.append(command.copy())
@@ -325,25 +315,26 @@ def run_3d_scenario(
         if collect_rollouts:
             rollout_history.append(global_rollouts.copy())
 
-        clearance = _minimum_state_clearance(
-            robot_volume_config,
-            obstacle_geometry_config,
+        clearance = minimum_state_clearance(
+            definition.robot_volume_config,
+            definition.obstacle_geometry_config,
             state,
         )
         minimum_clearance = _merge_minimum_clearance(minimum_clearance, clearance)
         clearance_history.append(clearance)
 
-        if np.linalg.norm(state[:3] - goal[:3]) <= goal_tolerance:
+        if np.linalg.norm(state[:3] - goal[:3]) <= definition.goal_tolerance:
             break
 
     final_distance = float(np.linalg.norm(state[:3] - goal[:3]))
-    reached_goal = final_distance <= goal_tolerance
+    reached_goal = final_distance <= definition.goal_tolerance
     collided = (
-        minimum_clearance is not None and minimum_clearance < clearance_margin
+        minimum_clearance is not None
+        and minimum_clearance < definition.clearance_margin
     )
 
     return ScenarioRunResult3D(
-        scenario=scenario_name,
+        scenario=definition.name,
         reached_goal=bool(reached_goal),
         collided=bool(collided),
         final_distance=final_distance,
@@ -359,12 +350,11 @@ def run_3d_scenario(
         ),
         rollout_history=rollout_history,
         clearance_history=clearance_history,
-        global_reference_path=reference_path,
-        global_obstacle_points=obstacle_points,
+        global_reference_path=definition.reference_path,
         observed_point_cloud_history=observed_point_cloud_history,
-        obstacle_geometry_config=obstacle_geometry_config,
-        robot_volume_config=robot_volume_config,
-        sensor_config=sensor_config,
+        obstacle_geometry_config=definition.obstacle_geometry_config,
+        robot_volume_config=definition.robot_volume_config,
+        sensor_config=definition.sensor_config,
     )
 
 
@@ -549,29 +539,11 @@ def build_mid360_like_observed_point_cloud(
     robot_pose: np.ndarray,
     sensor_config: Mapping[str, Any] | None = None,
 ) -> np.ndarray:
-    """Raycast axis-aligned box geometry into a world-frame observed cloud."""
-
-    sensor = _build_sensor_config({} if sensor_config is None else sensor_config)
-    if not obstacle_geometry_config:
-        return np.empty((0, 3), dtype=np.float32)
-
-    origin = np.asarray(robot_pose, dtype=np.float32).reshape(-1)[:3]
-    directions = _mid360_like_world_ray_directions(robot_pose, sensor)
-    hits = []
-    for direction in directions:
-        hit = _nearest_box_raycast_hit(
-            origin,
-            direction,
-            obstacle_geometry_config,
-            min_range_m=float(sensor["min_range_m"]),
-            max_range_m=float(sensor["max_range_m"]),
-        )
-        if hit is not None:
-            hits.append(hit)
-
-    if not hits:
-        return np.empty((0, 3), dtype=np.float32)
-    return np.asarray(hits, dtype=np.float32).reshape((-1, 3))
+    return _build_mid360_like_observed_point_cloud(
+        obstacle_geometry_config,
+        robot_pose,
+        sensor_config,
+    )
 
 
 def _build_observed_point_cloud_for_step(
@@ -580,7 +552,7 @@ def _build_observed_point_cloud_for_step(
     obstacle_geometry_config: list[dict[str, Any]],
     robot_pose: np.ndarray,
 ) -> np.ndarray:
-    return build_mid360_like_observed_point_cloud(
+    return _build_mid360_like_observed_point_cloud(
         obstacle_geometry_config,
         robot_pose,
         sensor_config,
@@ -590,16 +562,7 @@ def _build_observed_point_cloud_for_step(
 def _controller_point_budget(
     controller_config: Mapping[str, Any],
 ) -> int:
-    if "max_obs_num" in controller_config:
-        point_budget = int(controller_config["max_obs_num"])
-    else:
-        raise ValueError(
-            "MID-360-like 3D scenario config requires controller.max_obs_num "
-            "for the controller obstacle point budget."
-        )
-    if point_budget <= 0:
-        raise ValueError("controller.max_obs_num must be positive.")
-    return point_budget
+    return controller_point_budget(controller_config)
 
 
 def _validate_observation_config(
@@ -614,193 +577,8 @@ def _validate_observation_config(
     )
 
 
-def _build_sensor_config(config: Mapping[str, Any] | None) -> dict[str, Any] | None:
-    if config is None:
-        return None
-    sensor = dict(config)
-    sensor_type = str(sensor.get("type", "mid360_like"))
-    if sensor_type != "mid360_like":
-        raise ValueError(f"Unsupported 3D sensor type: {sensor_type}")
-
-    normalized = {
-        "type": "mid360_like",
-        "min_range_m": float(sensor.get("min_range_m", 0.1)),
-        "max_range_m": float(sensor.get("max_range_m", 10.0)),
-        "horizontal_fov_deg": float(sensor.get("horizontal_fov_deg", 360.0)),
-        "vertical_min_deg": float(sensor.get("vertical_min_deg", -7.0)),
-        "vertical_max_deg": float(sensor.get("vertical_max_deg", 52.0)),
-        "horizontal_samples": int(
-            sensor.get("horizontal_samples", sensor.get("horizontal_sample_count", 180))
-        ),
-        "vertical_samples": int(
-            sensor.get("vertical_samples", sensor.get("vertical_sample_count", 32))
-        ),
-        "noise_std_m": float(sensor.get("noise_std_m", 0.0)),
-        "dropout_probability": float(sensor.get("dropout_probability", 0.0)),
-        "seed": sensor.get("seed"),
-    }
-    if normalized["min_range_m"] < 0.0:
-        raise ValueError("sensor.min_range_m must be non-negative.")
-    if normalized["max_range_m"] <= normalized["min_range_m"]:
-        raise ValueError("sensor.max_range_m must be greater than min_range_m.")
-    if not 0.0 < normalized["horizontal_fov_deg"] <= 360.0:
-        raise ValueError("sensor.horizontal_fov_deg must be in (0, 360].")
-    if normalized["vertical_max_deg"] < normalized["vertical_min_deg"]:
-        raise ValueError("sensor.vertical_max_deg must be >= vertical_min_deg.")
-    if normalized["horizontal_samples"] <= 0:
-        raise ValueError("sensor.horizontal_samples must be positive.")
-    if normalized["vertical_samples"] <= 0:
-        raise ValueError("sensor.vertical_samples must be positive.")
-    if normalized["noise_std_m"] != 0.0:
-        raise ValueError("MID-360-like sensor noise is reserved but not implemented.")
-    if normalized["dropout_probability"] != 0.0:
-        raise ValueError("MID-360-like sensor dropout is reserved but not implemented.")
-    return normalized
-
-
-def _mid360_like_world_ray_directions(
-    robot_pose: np.ndarray,
-    sensor_config: Mapping[str, Any],
-) -> np.ndarray:
-    horizontal_angles = _sample_horizontal_angles(
-        fov_deg=float(sensor_config["horizontal_fov_deg"]),
-        sample_count=int(sensor_config["horizontal_samples"]),
-    )
-    vertical_angles = _sample_vertical_angles(
-        vertical_min_deg=float(sensor_config["vertical_min_deg"]),
-        vertical_max_deg=float(sensor_config["vertical_max_deg"]),
-        sample_count=int(sensor_config["vertical_samples"]),
-    )
-
-    local_directions = []
-    for vertical_angle in vertical_angles:
-        cos_elevation = np.cos(vertical_angle)
-        for horizontal_angle in horizontal_angles:
-            local_directions.append(
-                [
-                    cos_elevation * np.cos(horizontal_angle),
-                    cos_elevation * np.sin(horizontal_angle),
-                    np.sin(vertical_angle),
-                ]
-            )
-    local_directions = np.asarray(local_directions, dtype=np.float32)
-
-    pose = np.asarray(robot_pose, dtype=np.float32).reshape(-1)
-    c = np.cos(pose[3])
-    s = np.sin(pose[3])
-    rotation_local_to_global = np.array([[c, s], [-s, c]], dtype=np.float32)
-    world_directions = local_directions.copy()
-    world_directions[:, :2] = world_directions[:, :2] @ rotation_local_to_global
-    return world_directions.astype(np.float32)
-
-
-def _sample_horizontal_angles(*, fov_deg: float, sample_count: int) -> np.ndarray:
-    if sample_count == 1:
-        return np.asarray([0.0], dtype=np.float32)
-    fov = np.deg2rad(fov_deg)
-    if np.isclose(fov_deg, 360.0):
-        return np.linspace(0.0, fov, sample_count, endpoint=False, dtype=np.float32)
-    return np.linspace(-0.5 * fov, 0.5 * fov, sample_count, dtype=np.float32)
-
-
-def _sample_vertical_angles(
-    *,
-    vertical_min_deg: float,
-    vertical_max_deg: float,
-    sample_count: int,
-) -> np.ndarray:
-    if sample_count == 1:
-        midpoint = 0.5 * (vertical_min_deg + vertical_max_deg)
-        return np.asarray([np.deg2rad(midpoint)], dtype=np.float32)
-    return np.linspace(
-        np.deg2rad(vertical_min_deg),
-        np.deg2rad(vertical_max_deg),
-        sample_count,
-        dtype=np.float32,
-    )
-
-
-def _nearest_box_raycast_hit(
-    origin: np.ndarray,
-    direction: np.ndarray,
-    obstacle_geometry_config: list[dict[str, Any]],
-    *,
-    min_range_m: float,
-    max_range_m: float,
-) -> np.ndarray | None:
-    nearest_t = np.inf
-    nearest_hit = None
-    for obstacle in obstacle_geometry_config:
-        hit_t = _ray_axis_aligned_box_intersection(
-            origin,
-            direction,
-            obstacle,
-        )
-        if hit_t is None or hit_t < min_range_m or hit_t > max_range_m:
-            continue
-        if hit_t < nearest_t:
-            nearest_t = hit_t
-            nearest_hit = origin + direction * hit_t
-    if nearest_hit is None:
-        return None
-    return nearest_hit.astype(np.float32)
-
-
-def _ray_axis_aligned_box_intersection(
-    origin: np.ndarray,
-    direction: np.ndarray,
-    obstacle: Mapping[str, Any],
-) -> float | None:
-    center = np.asarray(obstacle["center"], dtype=np.float32)
-    size = np.asarray(obstacle["size"], dtype=np.float32)
-    half_size = size * 0.5
-    bounds_min = center - half_size
-    bounds_max = center + half_size
-
-    t_min = -np.inf
-    t_max = np.inf
-    for axis in range(3):
-        ray_component = float(direction[axis])
-        if abs(ray_component) < 1e-8:
-            if origin[axis] < bounds_min[axis] or origin[axis] > bounds_max[axis]:
-                return None
-            continue
-        inv_d = 1.0 / ray_component
-        t1 = (bounds_min[axis] - origin[axis]) * inv_d
-        t2 = (bounds_max[axis] - origin[axis]) * inv_d
-        t_near = min(t1, t2)
-        t_far = max(t1, t2)
-        t_min = max(t_min, t_near)
-        t_max = min(t_max, t_far)
-        if t_min > t_max:
-            return None
-
-    if t_min < 0.0:
-        return None
-    return float(t_min)
-
-
-def build_range_based_local_observation(
-    global_obstacle_points: np.ndarray,
-    robot_pose: np.ndarray,
-    observation_range: float,
-    max_points: int,
-) -> np.ndarray:
-    if global_obstacle_points.size == 0 or max_points <= 0:
-        return np.empty((0, 3), dtype=np.float32)
-
-    deltas = global_obstacle_points - robot_pose[:3]
-    distances = np.linalg.norm(deltas, axis=1)
-    selected_indices = np.flatnonzero(distances <= observation_range)
-    if selected_indices.size > max_points:
-        nearest_order = np.argsort(distances[selected_indices])[:max_points]
-        selected_indices = selected_indices[nearest_order]
-    if selected_indices.size == 0:
-        return np.empty((0, 3), dtype=np.float32)
-    return transfer_from_global_to_local_frame(
-        global_obstacle_points[selected_indices],
-        robot_pose,
-    ).astype(np.float32)
+def _build_sensor_config(config: Mapping[str, Any] | None) -> dict[str, Any]:
+    return build_3d_sensor_config(config)
 
 
 def select_local_plan(
@@ -1097,15 +875,7 @@ def _load_yaml_text(text: str) -> dict[str, Any]:
 
 
 def _load_robot_volume_config(config: Mapping[str, Any]) -> list[dict[str, Any]]:
-    robot_volume = config.get("robot_volume", {})
-    boxes = (
-        robot_volume.get("boxes", robot_volume)
-        if isinstance(robot_volume, dict)
-        else robot_volume
-    )
-    if not isinstance(boxes, list) or not boxes:
-        raise ValueError("3D scenario config requires at least one robot volume box.")
-    return [dict(box) for box in boxes]
+    return load_3d_robot_volume_config(config)
 
 
 def _build_controller(
@@ -1133,69 +903,15 @@ def _build_controller(
 
 
 def _build_reference_path(config: Mapping[str, Any]) -> np.ndarray:
-    waypoints = np.asarray(config["waypoints"], dtype=np.float32)
-    if waypoints.ndim != 2 or waypoints.shape[1] != 4 or waypoints.shape[0] < 2:
-        raise ValueError("3D reference path waypoints must have shape (N, 4).")
-    point_count = int(config.get("point_count", waypoints.shape[0]))
-    if point_count < 2:
-        raise ValueError("3D reference path point_count must be at least 2.")
-
-    segment_lengths = np.linalg.norm(np.diff(waypoints[:, :3], axis=0), axis=1)
-    cumulative = np.concatenate([[0.0], np.cumsum(segment_lengths)])
-    samples = np.linspace(0.0, cumulative[-1], point_count, dtype=np.float32)
-
-    path = np.empty((point_count, 4), dtype=np.float32)
-    for dim in range(4):
-        path[:, dim] = np.interp(samples, cumulative, waypoints[:, dim])
-    return path
-
-
-def _build_obstacle_points(config: Mapping[str, Any]) -> np.ndarray:
-    points = np.asarray(config.get("points", []), dtype=np.float32)
-    if points.size == 0:
-        return np.empty((0, 3), dtype=np.float32)
-    return points.reshape((-1, 3)).astype(np.float32)
+    return build_3d_reference_path(config)
 
 
 def _build_obstacle_geometry_config(config: Mapping[str, Any]) -> list[dict[str, Any]]:
-    geometry = config.get("geometry", [])
-    if geometry is None:
-        return []
-    result = []
-    for index, obstacle in enumerate(geometry):
-        obstacle_type = str(obstacle.get("type", "box"))
-        if obstacle_type != "box":
-            raise ValueError(
-                f"Unsupported 3D obstacle geometry type at index {index}: "
-                f"{obstacle_type}"
-            )
-        center = _finite_vector3(
-            obstacle.get("center"),
-            f"obstacle geometry {index} center",
-        )
-        size = _finite_vector3(
-            obstacle.get("size"),
-            f"obstacle geometry {index} size",
-        )
-        if any(value <= 0.0 for value in size):
-            raise ValueError(f"obstacle geometry {index} size values must be positive.")
-        result.append(
-            {
-                "type": "box",
-                "center": center,
-                "size": size,
-            }
-        )
-    return result
+    return build_3d_obstacle_geometry_config(config)
 
 
 def _finite_vector3(value: Any, name: str) -> list[float]:
-    vector = np.asarray(value, dtype=np.float64)
-    if vector.shape != (3,):
-        raise ValueError(f"{name} must have shape (3,).")
-    if not np.all(np.isfinite(vector)):
-        raise ValueError(f"{name} must contain only finite values.")
-    return [float(item) for item in vector.tolist()]
+    return finite_vector3(value, name)
 
 
 def _minimum_state_clearance(
@@ -1203,13 +919,11 @@ def _minimum_state_clearance(
     obstacle_geometry_config: list[dict[str, Any]],
     robot_pose: np.ndarray,
 ) -> float | None:
-    if obstacle_geometry_config:
-        return _minimum_geometry_clearance(
-            robot_volume_config,
-            obstacle_geometry_config,
-            robot_pose,
-        )
-    return None
+    return minimum_state_clearance(
+        robot_volume_config,
+        obstacle_geometry_config,
+        robot_pose,
+    )
 
 
 def _minimum_geometry_clearance(
@@ -1217,233 +931,11 @@ def _minimum_geometry_clearance(
     obstacle_geometry_config: list[dict[str, Any]],
     robot_pose: np.ndarray,
 ) -> float | None:
-    robot_boxes = _robot_world_boxes(robot_volume_config, robot_pose)
-    obstacle_boxes = [
-        _axis_aligned_world_box(obstacle)
-        for obstacle in obstacle_geometry_config
-    ]
-    clearances = [
-        _signed_obb_clearance(robot_box, obstacle_box)
-        for robot_box in robot_boxes
-        for obstacle_box in obstacle_boxes
-    ]
-    if not clearances:
-        return None
-    return float(min(clearances))
-
-
-def _robot_world_boxes(
-    robot_volume_config: list[dict[str, Any]],
-    robot_pose: np.ndarray,
-) -> list[dict[str, np.ndarray]]:
-    pose = np.asarray(robot_pose, dtype=np.float32).reshape(-1)
-    c = float(np.cos(pose[3]))
-    s = float(np.sin(pose[3]))
-    axes = np.asarray(
-        [
-            [c, s, 0.0],
-            [-s, c, 0.0],
-            [0.0, 0.0, 1.0],
-        ],
-        dtype=np.float32,
+    return minimum_geometry_clearance(
+        robot_volume_config,
+        obstacle_geometry_config,
+        robot_pose,
     )
-
-    boxes = []
-    for box in robot_volume_config:
-        local_center = np.asarray(box.get("center", [0.0, 0.0, 0.0]), dtype=np.float32)
-        size = np.asarray(box["size"], dtype=np.float32)
-        center = transfer_from_local_to_global_frame(local_center[None, :], pose)[0]
-        boxes.append(
-            {
-                "center": center.astype(np.float32),
-                "axes": axes,
-                "half_size": (size * 0.5).astype(np.float32),
-            }
-        )
-    return boxes
-
-
-def _axis_aligned_world_box(obstacle: Mapping[str, Any]) -> dict[str, np.ndarray]:
-    return {
-        "center": np.asarray(obstacle["center"], dtype=np.float32),
-        "axes": np.eye(3, dtype=np.float32),
-        "half_size": (np.asarray(obstacle["size"], dtype=np.float32) * 0.5).astype(
-            np.float32
-        ),
-    }
-
-
-def _signed_obb_clearance(
-    first: Mapping[str, np.ndarray],
-    second: Mapping[str, np.ndarray],
-) -> float:
-    intersects, penetration = _obb_intersection_penetration(first, second)
-    if intersects:
-        return -float(penetration)
-    return float(_obb_surface_distance(first, second))
-
-
-def _obb_intersection_penetration(
-    first: Mapping[str, np.ndarray],
-    second: Mapping[str, np.ndarray],
-) -> tuple[bool, float]:
-    axes = []
-    first_axes = np.asarray(first["axes"], dtype=np.float32)
-    second_axes = np.asarray(second["axes"], dtype=np.float32)
-    axes.extend(first_axes)
-    axes.extend(second_axes)
-    for first_axis in first_axes:
-        for second_axis in second_axes:
-            cross_axis = np.cross(first_axis, second_axis)
-            if np.linalg.norm(cross_axis) > 1e-7:
-                axes.append(cross_axis)
-
-    min_overlap = np.inf
-    for axis in axes:
-        norm = float(np.linalg.norm(axis))
-        if norm <= 1e-7:
-            continue
-        unit_axis = np.asarray(axis, dtype=np.float32) / norm
-        first_min, first_max = _project_obb(first, unit_axis)
-        second_min, second_max = _project_obb(second, unit_axis)
-        overlap = min(first_max, second_max) - max(first_min, second_min)
-        if overlap < 0.0:
-            return False, 0.0
-        min_overlap = min(min_overlap, overlap)
-    if not np.isfinite(min_overlap):
-        min_overlap = 0.0
-    return True, float(min_overlap)
-
-
-def _project_obb(
-    box: Mapping[str, np.ndarray],
-    axis: np.ndarray,
-) -> tuple[float, float]:
-    center = float(np.dot(box["center"], axis))
-    radius = float(
-        np.sum(np.asarray(box["half_size"]) * np.abs(np.asarray(box["axes"]) @ axis))
-    )
-    return center - radius, center + radius
-
-
-def _obb_surface_distance(
-    first: Mapping[str, np.ndarray],
-    second: Mapping[str, np.ndarray],
-) -> float:
-    distances = []
-    first_corners = _obb_corners(first)
-    second_corners = _obb_corners(second)
-    distances.extend(_point_to_obb_distance(corner, second) for corner in first_corners)
-    distances.extend(_point_to_obb_distance(corner, first) for corner in second_corners)
-
-    first_edges = _obb_edges(first_corners)
-    second_edges = _obb_edges(second_corners)
-    for first_start, first_end in first_edges:
-        for second_start, second_end in second_edges:
-            distances.append(
-                _segment_segment_distance(
-                    first_start,
-                    first_end,
-                    second_start,
-                    second_end,
-                )
-            )
-    return float(min(distances)) if distances else np.inf
-
-
-def _obb_corners(box: Mapping[str, np.ndarray]) -> list[np.ndarray]:
-    center = np.asarray(box["center"], dtype=np.float32)
-    axes = np.asarray(box["axes"], dtype=np.float32)
-    half_size = np.asarray(box["half_size"], dtype=np.float32)
-    corners = []
-    for x_sign in (-1.0, 1.0):
-        for y_sign in (-1.0, 1.0):
-            for z_sign in (-1.0, 1.0):
-                signs = np.asarray([x_sign, y_sign, z_sign], dtype=np.float32)
-                corners.append(center + (signs * half_size) @ axes)
-    return corners
-
-
-def _obb_edges(corners: list[np.ndarray]) -> list[tuple[np.ndarray, np.ndarray]]:
-    edges = []
-    signs = [
-        (x_sign, y_sign, z_sign)
-        for x_sign in (-1.0, 1.0)
-        for y_sign in (-1.0, 1.0)
-        for z_sign in (-1.0, 1.0)
-    ]
-    for first_index, first_signs in enumerate(signs):
-        for second_index in range(first_index + 1, len(signs)):
-            second_signs = signs[second_index]
-            if sum(a != b for a, b in zip(first_signs, second_signs)) == 1:
-                edges.append((corners[first_index], corners[second_index]))
-    return edges
-
-
-def _point_to_obb_distance(point: np.ndarray, box: Mapping[str, np.ndarray]) -> float:
-    delta = np.asarray(point, dtype=np.float32) - np.asarray(
-        box["center"],
-        dtype=np.float32,
-    )
-    local = np.asarray(box["axes"], dtype=np.float32) @ delta
-    outside = np.maximum(
-        np.abs(local) - np.asarray(box["half_size"], dtype=np.float32),
-        0.0,
-    )
-    return float(np.linalg.norm(outside))
-
-
-def _segment_segment_distance(
-    first_start: np.ndarray,
-    first_end: np.ndarray,
-    second_start: np.ndarray,
-    second_end: np.ndarray,
-) -> float:
-    u = np.asarray(first_end, dtype=np.float64) - np.asarray(
-        first_start,
-        dtype=np.float64,
-    )
-    v = np.asarray(second_end, dtype=np.float64) - np.asarray(
-        second_start,
-        dtype=np.float64,
-    )
-    w = np.asarray(first_start, dtype=np.float64) - np.asarray(
-        second_start,
-        dtype=np.float64,
-    )
-    a = float(np.dot(u, u))
-    b = float(np.dot(u, v))
-    c = float(np.dot(v, v))
-    d = float(np.dot(u, w))
-    e = float(np.dot(v, w))
-    denominator = a * c - b * b
-    small = 1e-12
-
-    if a <= small and c <= small:
-        return float(np.linalg.norm(w))
-    if a <= small:
-        t = np.clip(e / c, 0.0, 1.0)
-        closest = w - t * v
-        return float(np.linalg.norm(closest))
-    if c <= small:
-        s = np.clip(-d / a, 0.0, 1.0)
-        closest = w + s * u
-        return float(np.linalg.norm(closest))
-
-    if denominator < small:
-        s = 0.0
-    else:
-        s = np.clip((b * e - c * d) / denominator, 0.0, 1.0)
-    t = (b * s + e) / c
-    if t < 0.0:
-        t = 0.0
-        s = np.clip(-d / a, 0.0, 1.0)
-    elif t > 1.0:
-        t = 1.0
-        s = np.clip((b - d) / a, 0.0, 1.0)
-
-    closest = w + s * u - t * v
-    return float(np.linalg.norm(closest))
 
 
 def _merge_minimum_clearance(

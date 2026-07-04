@@ -51,11 +51,19 @@ class Optimizer3D:
         batch_size: int = 1000,
         iteration_count: int = 1,
         temperature: float = 0.3,
+        gamma: float = 0.015,
         vx_max: float = 0.5,
         vx_min: float = -0.35,
         vy_max: float = 0.5,
         vz_max: float = 0.5,
         wz_max: float = 1.9,
+        ax_max: float = 3.0,
+        ax_min: float = -3.0,
+        ay_max: float = 3.0,
+        ay_min: float = -3.0,
+        az_max: float = 3.0,
+        az_min: float = -3.0,
+        awz_max: float = 3.5,
         vx_std: float = 0.2,
         vy_std: float = 0.2,
         vz_std: float = 0.2,
@@ -75,6 +83,13 @@ class Optimizer3D:
             [{"center": [0.0, 0.0, 0.0], "size": [0.4, 0.4, 0.4]}],
         )
         self.robot_volume_ = BoxUnionVolume3D.from_config(robot_volume_config)
+        ax_max = abs(ax_max)
+        if ax_min > 0.0:
+            ax_min = -ax_min
+        if ay_min > 0.0:
+            ay_min = -ay_min
+        if az_min > 0.0:
+            az_min = -az_min
         self.settings_ = OptimizerSettings3D(
             constraints=ControlConstraints3D(
                 vx_max=abs(vx_max),
@@ -82,6 +97,13 @@ class Optimizer3D:
                 vy=abs(vy_max),
                 vz=abs(vz_max),
                 wz=abs(wz_max),
+                ax_max=float(ax_max),
+                ax_min=float(ax_min),
+                ay_max=float(abs(ay_max)),
+                ay_min=float(ay_min),
+                az_max=float(abs(az_max)),
+                az_min=float(az_min),
+                awz_max=float(abs(awz_max)),
             ),
             sampling_std=SamplingStd3D(
                 vx=float(vx_std),
@@ -91,6 +113,7 @@ class Optimizer3D:
             ),
             model_dt=float(model_dt),
             temperature=float(temperature),
+            gamma=float(gamma),
             batch_size=int(batch_size),
             time_steps=int(time_steps),
             iteration_count=int(iteration_count),
@@ -212,6 +235,7 @@ class Optimizer3D:
 
     def reset(self, seed: int = 0):
         self.control_sequence_ = reset_ControlSequence3D(self.settings_.time_steps)
+        self.control_history_ = jnp.zeros((4, 4), dtype=jnp.float32)
         self.key_ = jax.random.PRNGKey(seed)
         self.last_command_vel_ = jnp.zeros(4, dtype=jnp.float32)
         self.last_validation_result_ = None
@@ -255,6 +279,12 @@ class Optimizer3D:
                 costs,
             )
 
+        self.control_sequence_, self.control_history_ = (
+            self._smooth_control_sequence_with_history(
+                self.control_sequence_,
+                self.control_history_,
+            )
+        )
         optimal_trajectory = self.getOptimizedTrajectory(
             self.control_sequence_,
             robot_pose,
@@ -446,6 +476,11 @@ class Optimizer3D:
     def _update_control_sequence(
         self, candidate_sequences: ControlSequence3D, costs: jax.Array
     ) -> ControlSequence3D:
+        costs = self._add_gamma_regularization(
+            candidate_sequences,
+            self.control_sequence_,
+            costs,
+        )
         normalized_costs = costs - jnp.min(costs)
         weights = jax.nn.softmax(-normalized_costs / self.settings_.temperature)
         sequence = ControlSequence3D(
@@ -456,16 +491,216 @@ class Optimizer3D:
         )
         return self.applyControlSequenceConstraints(sequence)
 
+    def _add_gamma_regularization(
+        self,
+        candidate_sequences: ControlSequence3D,
+        control_sequence: ControlSequence3D,
+        costs: jax.Array,
+    ) -> jax.Array:
+        settings = self.settings_
+
+        def add_axis_cost(
+            axis_costs: jax.Array,
+            candidates: jax.Array,
+            nominal: jax.Array,
+            std: float,
+        ) -> jax.Array:
+            if std <= 0.0:
+                return axis_costs
+            nominal_t = nominal[None, :]
+            bounded_noise = candidates - nominal_t
+            gamma = settings.gamma / (std**2)
+            return axis_costs + gamma * jnp.sum(bounded_noise * nominal_t, axis=1)
+
+        costs = add_axis_cost(
+            costs,
+            candidate_sequences.vx,
+            control_sequence.vx,
+            settings.sampling_std.vx,
+        )
+        costs = add_axis_cost(
+            costs,
+            candidate_sequences.vy,
+            control_sequence.vy,
+            settings.sampling_std.vy,
+        )
+        costs = add_axis_cost(
+            costs,
+            candidate_sequences.vz,
+            control_sequence.vz,
+            settings.sampling_std.vz,
+        )
+        costs = add_axis_cost(
+            costs,
+            candidate_sequences.wz,
+            control_sequence.wz,
+            settings.sampling_std.wz,
+        )
+        return costs
+
     def applyControlSequenceConstraints(
         self, control_sequence: ControlSequence3D
     ) -> ControlSequence3D:
-        vx, vy, vz, wz = self._clip_controls(
+        s = self.settings_
+        vx = self._limit_linear_axis_delta(
             control_sequence.vx,
+            s.constraints.vx_min,
+            s.constraints.vx_max,
+            s.constraints.ax_min,
+            s.constraints.ax_max,
+        )
+        vy = self._limit_linear_axis_delta(
             control_sequence.vy,
+            -s.constraints.vy,
+            s.constraints.vy,
+            s.constraints.ay_min,
+            s.constraints.ay_max,
+        )
+        vz = self._limit_linear_axis_delta(
             control_sequence.vz,
+            -s.constraints.vz,
+            s.constraints.vz,
+            s.constraints.az_min,
+            s.constraints.az_max,
+        )
+        wz = self._limit_symmetric_axis_delta(
             control_sequence.wz,
+            s.constraints.wz,
+            s.constraints.awz_max,
         )
         return replace(control_sequence, vx=vx, vy=vy, vz=vz, wz=wz)
+
+    def _limit_linear_axis_delta(
+        self,
+        values: jax.Array,
+        lower: float,
+        upper: float,
+        accel_min: float,
+        accel_max: float,
+    ) -> jax.Array:
+        max_delta = self.settings_.model_dt * accel_max
+        min_delta = self.settings_.model_dt * accel_min
+        first = jnp.clip(values[0], lower, upper)
+
+        def step(last, current):
+            current = jnp.clip(current, lower, upper)
+            lo = jnp.where(last > 0.0, last + min_delta, last - max_delta)
+            hi = jnp.where(last > 0.0, last + max_delta, last - min_delta)
+            current = jnp.clip(current, lo, hi)
+            return current, current
+
+        _, rest = jax.lax.scan(step, first, values[1:])
+        return jnp.concatenate([first[None], rest], axis=0)
+
+    def _limit_symmetric_axis_delta(
+        self,
+        values: jax.Array,
+        limit: float,
+        accel_limit: float,
+    ) -> jax.Array:
+        max_delta = self.settings_.model_dt * accel_limit
+        first = jnp.clip(values[0], -limit, limit)
+
+        def step(last, current):
+            current = jnp.clip(current, -limit, limit)
+            current = jnp.clip(current, last - max_delta, last + max_delta)
+            return current, current
+
+        _, rest = jax.lax.scan(step, first, values[1:])
+        return jnp.concatenate([first[None], rest], axis=0)
+
+    def _smooth_control_sequence_with_history(
+        self,
+        control_sequence: ControlSequence3D,
+        control_history: jax.Array,
+    ) -> Tuple[ControlSequence3D, jax.Array]:
+        num_sequences = control_sequence.vx.shape[0] - 1
+
+        def do_nothing(_):
+            return control_sequence, control_history
+
+        def apply_filter(_):
+            filtered = self._savitzky_golay_filter_control_sequence(
+                control_sequence,
+                control_history,
+            )
+            filtered = self.applyControlSequenceConstraints(filtered)
+
+            offset = jnp.asarray(
+                1 if self.settings_.shift_control_sequence else 0,
+                dtype=jnp.int32,
+            )
+            new_control = jnp.stack(
+                [
+                    filtered.vx[offset],
+                    filtered.vy[offset],
+                    filtered.vz[offset],
+                    filtered.wz[offset],
+                ],
+                axis=0,
+            )
+            updated_history = jnp.concatenate(
+                [control_history[1:], new_control[None, :]],
+                axis=0,
+            )
+            return filtered, updated_history
+
+        return jax.lax.cond(num_sequences < 4, do_nothing, apply_filter, operand=None)
+
+    def _savitzky_golay_filter_control_sequence(
+        self,
+        control_sequence: ControlSequence3D,
+        control_history: jax.Array,
+    ) -> ControlSequence3D:
+        num_sequences = control_sequence.vx.shape[0] - 1
+        use_nine_point = num_sequences >= 20
+
+        def filter_axis(sequence: jax.Array, history: jax.Array) -> jax.Array:
+            def nine_point(_):
+                coeffs = (
+                    jnp.array(
+                        [-21.0, 14.0, 39.0, 54.0, 59.0, 54.0, 39.0, 14.0, -21.0],
+                        dtype=jnp.float32,
+                    )
+                    / 231.0
+                )
+                padded = jnp.concatenate(
+                    [history, sequence, jnp.full((4,), sequence[-1])],
+                    axis=0,
+                )
+
+                def apply_at(idx):
+                    data = jax.lax.dynamic_slice(padded, (idx,), (9,))
+                    return jnp.sum(data * coeffs)
+
+                idxs = jnp.arange(num_sequences, dtype=jnp.int32)
+                return sequence.at[:num_sequences].set(jax.vmap(apply_at)(idxs))
+
+            def five_point(_):
+                coeffs = (
+                    jnp.array([-3.0, 12.0, 17.0, 12.0, -3.0], dtype=jnp.float32)
+                    / 35.0
+                )
+                padded = jnp.concatenate(
+                    [history[-2:], sequence, jnp.full((2,), sequence[-1])],
+                    axis=0,
+                )
+
+                def apply_at(idx):
+                    data = jax.lax.dynamic_slice(padded, (idx,), (5,))
+                    return jnp.sum(data * coeffs)
+
+                idxs = jnp.arange(num_sequences, dtype=jnp.int32)
+                return sequence.at[:num_sequences].set(jax.vmap(apply_at)(idxs))
+
+            return jax.lax.cond(use_nine_point, nine_point, five_point, operand=None)
+
+        return ControlSequence3D(
+            vx=filter_axis(control_sequence.vx, control_history[:, 0]),
+            vy=filter_axis(control_sequence.vy, control_history[:, 1]),
+            vz=filter_axis(control_sequence.vz, control_history[:, 2]),
+            wz=filter_axis(control_sequence.wz, control_history[:, 3]),
+        )
 
     def shiftControlSequence(
         self, control_sequence: ControlSequence3D

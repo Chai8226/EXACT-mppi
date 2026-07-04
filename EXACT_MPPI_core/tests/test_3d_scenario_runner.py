@@ -559,6 +559,11 @@ def test_xyz_yaw_showcase_3d_exports_web_replay_scene():
     replay = build_3d_replay_data(result)
     reference_yaw_range = np.ptp(np.unwrap(result.global_reference_path[:, 3]))
     executed_yaw_range = np.ptp(np.unwrap(result.state_history[:, 3]))
+    command_delta_norms = np.linalg.norm(
+        np.diff(result.command_history, axis=0),
+        axis=1,
+    )
+    large_command_jumps = int(np.sum(command_delta_norms > 1.0))
     zero_yaw_minimum_clearance = minimum_clearance_with_fixed_yaw(result, yaw=0.0)
 
     assert_standard_summary(result.summary, "xyz_yaw_showcase_3d")
@@ -568,6 +573,8 @@ def test_xyz_yaw_showcase_3d_exports_web_replay_scene():
     assert result.minimum_clearance >= config["simulation"]["clearance_margin"]
     assert reference_yaw_range >= 1.1
     assert executed_yaw_range >= 0.75
+    assert result.summary["command_smoothness"]["rms_delta_norm"] <= 0.75
+    assert large_command_jumps == 0
     assert zero_yaw_minimum_clearance is not None
     assert zero_yaw_minimum_clearance < config["simulation"]["clearance_margin"]
     assert_replay_scene(replay, result)

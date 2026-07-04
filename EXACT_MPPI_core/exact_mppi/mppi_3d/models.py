@@ -15,6 +15,13 @@ class ControlConstraints3D:
     vy: float
     vz: float
     wz: float
+    ax_max: float = 3.0
+    ax_min: float = -3.0
+    ay_max: float = 3.0
+    ay_min: float = -3.0
+    az_max: float = 3.0
+    az_min: float = -3.0
+    awz_max: float = 3.5
 
 
 @tree_util.register_dataclass
@@ -67,6 +74,7 @@ class OptimizerSettings3D:
     goal_yaw_weight: float
     path_weight: float
     control_weight: float
+    gamma: float = 0.015
 
 
 def reset_ControlSequence3D(

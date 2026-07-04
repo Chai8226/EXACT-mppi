@@ -2,7 +2,7 @@
 
 # Make the local plan visible in the replay viewer
 
-Status: ready-for-agent
+Status: implemented
 Category: bug
 
 ## Parent
@@ -37,11 +37,11 @@ The local plan should be visually obvious when its layer is enabled. It should b
 
 **Acceptance criteria:**
 
-- [ ] Loading a `narrow_gap_t_volume_3d` replay shows the local plan when the local-plan layer is enabled.
-- [ ] The local plan remains visually distinguishable from the global reference path and optimal trajectory.
-- [ ] Timeline scrubbing updates the local plan to the selected frame.
-- [ ] Turning the local-plan layer off hides the local plan without affecting other path layers.
-- [ ] A viewer smoke/static test or documented manual check verifies the local-plan layer with representative replay data.
+- [x] Loading a `narrow_gap_t_volume_3d` replay shows the local plan when the local-plan layer is enabled.
+- [x] The local plan remains visually distinguishable from the global reference path and optimal trajectory.
+- [x] Timeline scrubbing updates the local plan to the selected frame.
+- [x] Turning the local-plan layer off hides the local plan without affecting other path layers.
+- [x] A viewer smoke/static test or documented manual check verifies the local-plan layer with representative replay data.
 
 **Out of scope:**
 

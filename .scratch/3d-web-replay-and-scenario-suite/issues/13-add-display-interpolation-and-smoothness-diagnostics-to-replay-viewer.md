@@ -2,7 +2,7 @@
 
 # Add display interpolation and smoothness diagnostics to the replay viewer
 
-Status: ready-for-agent
+Status: implemented
 Category: enhancement
 
 ## Parent
@@ -39,11 +39,11 @@ The viewer should support display-only interpolation between replay frames for s
 
 **Acceptance criteria:**
 
-- [ ] Continuous playback uses display-only interpolation for robot pose between adjacent replay frames.
-- [ ] Timeline scrubbing still lands on exact exported frames and displays exact frame metrics.
-- [ ] The viewer exposes replay frame count/cadence and current smoothness telemetry clearly enough to distinguish animation smoothness from controller smoothness.
-- [ ] Interpolation does not alter exported replay JSON, scenario summaries, or smoothness telemetry.
-- [ ] A test or documented manual check covers playback with interpolation enabled on `narrow_gap_t_volume_3d`.
+- [x] Continuous playback uses display-only interpolation for robot pose between adjacent replay frames.
+- [x] Timeline scrubbing still lands on exact exported frames and displays exact frame metrics.
+- [x] The viewer exposes replay frame count/cadence and current smoothness telemetry clearly enough to distinguish animation smoothness from controller smoothness.
+- [x] Interpolation does not alter exported replay JSON, scenario summaries, or smoothness telemetry.
+- [x] A test or documented manual check covers playback with interpolation enabled on `narrow_gap_t_volume_3d`.
 
 **Out of scope:**
 

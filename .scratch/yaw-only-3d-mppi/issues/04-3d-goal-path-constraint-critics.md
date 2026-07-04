@@ -1,6 +1,6 @@
 # 迁移 3D goal、path、constraint 相关 critics
 
-Status: ready-for-human
+Status: implemented
 
 ## Parent
 
@@ -24,7 +24,7 @@ Do not add `PathAngleCritic3D`.
 
 ## Blocked by
 
-None - the 3D Core API slice is implemented and pending human review.
+None - the 3D Core API slice is implemented and human-reviewed.
 
 ## Comments
 

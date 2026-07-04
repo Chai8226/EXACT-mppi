@@ -1,6 +1,6 @@
 # 接入 ObstaclesCritic3D 与 trajectory validation
 
-Status: ready-for-human
+Status: implemented
 
 ## Parent
 
@@ -23,7 +23,7 @@ This slice should make a simple obstacle-aware 3D control call prefer a safer tr
 
 ## Blocked by
 
-None - the 3D Core API and box-union SDF slices are implemented and pending human review.
+None - the 3D Core API and box-union SDF slices are implemented and human-reviewed.
 
 ## Comments
 

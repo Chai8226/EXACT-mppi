@@ -2,7 +2,7 @@
 
 # Render scenario obstacle geometry in the replay viewer
 
-Status: ready-for-agent
+Status: implemented
 Category: enhancement
 
 ## Parent
@@ -38,11 +38,11 @@ Scenario replay data should be able to include static obstacle visualization geo
 
 **Acceptance criteria:**
 
-- [ ] `narrow_gap_t_volume_3d` replay data includes static obstacle geometry sufficient to render the gap walls as 3D bodies.
-- [ ] The viewer renders obstacle geometry as 3D objects, not only as points.
-- [ ] The existing `obstacle_points` export remains present and usable for debugging/controller inspection.
-- [ ] Geometry rendering is world-frame and passive; the browser does not own simulation or collision logic.
-- [ ] Tests cover replay export of obstacle geometry for at least one scenario and a viewer smoke/static check for the geometry rendering hook.
+- [x] `narrow_gap_t_volume_3d` replay data includes static obstacle geometry sufficient to render the gap walls as 3D bodies.
+- [x] The viewer renders obstacle geometry as 3D objects, not only as points.
+- [x] The existing `obstacle_points` export remains present and usable for debugging/controller inspection.
+- [x] Geometry rendering is world-frame and passive; the browser does not own simulation or collision logic.
+- [x] Tests cover replay export of obstacle geometry for at least one scenario and a viewer smoke/static check for the geometry rendering hook.
 
 **Out of scope:**
 

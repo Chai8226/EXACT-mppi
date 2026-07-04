@@ -1,6 +1,6 @@
 # 实现 box union volume 与 exact 3D polyhedron SDF
 
-Status: ready-for-human
+Status: implemented
 
 ## Parent
 
@@ -23,7 +23,7 @@ The SDF should compute magnitude from exact point-to-triangle surface distance a
 
 ## Blocked by
 
-None - the 3D Core API slice is implemented and pending human review.
+None - the 3D Core API slice is implemented and human-reviewed.
 
 ## Comments
 

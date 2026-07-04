@@ -1,6 +1,6 @@
 # 迁移 3D control preference critics
 
-Status: ready-for-human
+Status: implemented
 
 ## Parent
 
@@ -22,7 +22,7 @@ This slice covers prefer-forward behavior, velocity deadband behavior, and twirl
 
 ## Blocked by
 
-None - the 3D Core API slice is implemented and pending human review.
+None - the 3D Core API slice is implemented and human-reviewed.
 
 ## Comments
 

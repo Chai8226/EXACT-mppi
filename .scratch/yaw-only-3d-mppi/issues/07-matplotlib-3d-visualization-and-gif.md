@@ -14,11 +14,11 @@ The example should support display/render controls for headless runs and optiona
 
 ## Acceptance criteria
 
-- [ ] The example can draw 3D obstacle points, global reference path, local plan, optimal trajectory, and current 3D robot volume.
-- [ ] Sampled rollouts can be shown through an optional flag.
-- [ ] Visualization can be disabled for headless runs.
-- [ ] GIF saving can be enabled without making rendering mandatory for normal tests.
-- [ ] The visualization layer does not change the headless example success criteria.
+- [x] The example can draw 3D obstacle points, global reference path, local plan, optimal trajectory, and current 3D robot volume.
+- [x] Sampled rollouts can be shown through an optional flag.
+- [x] Visualization can be disabled for headless runs.
+- [x] GIF saving can be enabled without making rendering mandatory for normal tests.
+- [x] The visualization layer does not change the headless example success criteria.
 
 ## Blocked by
 

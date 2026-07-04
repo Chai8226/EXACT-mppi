@@ -1,6 +1,6 @@
 # 建立 yaw-only 3D Core API 的最小闭环
 
-Status: ready-for-human
+Status: implemented
 
 ## Parent
 

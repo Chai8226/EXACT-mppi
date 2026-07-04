@@ -1,6 +1,6 @@
 # 构建 Core-only 3D obstacle-avoidance example
 
-Status: ready-for-human
+Status: implemented
 
 ## Parent
 

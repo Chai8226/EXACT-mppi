@@ -2,7 +2,7 @@
 
 # Remove or gate the yellow heading cone on the T-shaped robot
 
-Status: ready-for-agent
+Status: implemented
 Category: bug
 
 ## Parent
@@ -37,10 +37,10 @@ By default, the robot rendering should show only the authoritative T-shaped 3D r
 
 **Acceptance criteria:**
 
-- [ ] Loading a replay no longer shows a yellow cone/triangle as part of the default T-shaped robot.
-- [ ] The T-shaped body orientation remains understandable during playback.
-- [ ] If a heading marker remains available, it is disabled by default and controlled separately from the robot volume layer.
-- [ ] Tests no longer require `ConeGeometry` as proof of heading clarity; they verify authoritative robot-volume rendering instead.
+- [x] Loading a replay no longer shows a yellow cone/triangle as part of the default T-shaped robot.
+- [x] The T-shaped body orientation remains understandable during playback.
+- [x] If a heading marker remains available, it is disabled by default and controlled separately from the robot volume layer.
+- [x] Tests no longer require `ConeGeometry` as proof of heading clarity; they verify authoritative robot-volume rendering instead.
 
 **Out of scope:**
 

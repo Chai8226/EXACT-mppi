@@ -40,6 +40,18 @@ _Avoid_: Authoritative obstacle geometry, observed point cloud
 A set of reproducible yaw-only 3D navigation scenarios where each scenario isolates one capability such as baseline tracking, vertical gates, narrow gaps, T-shaped traps, or cluttered corridors.
 _Avoid_: One-off demo world, single showcase scene
 
+**Constrained 3D showcase scenario**:
+A reproducible yaw-only 3D scenario whose reference path and obstacle geometry are intentionally shaped to make a target capability visible in offline Web replay.
+_Avoid_: Random clutter demo, unconstrained stress test
+
+**3D capability evidence**:
+Scenario outcome and trajectory metrics that show a yaw-only 3D capability was exercised, such as goal reach, collision-free clearance, lateral displacement, vertical displacement, and yaw range.
+_Avoid_: Visual impression only, frame-specific pose assertion
+
+**Manual 3D Web showcase scenario**:
+A constrained 3D showcase scenario intended to be run explicitly for offline Web replay inspection rather than as part of the default static baseline suite.
+_Avoid_: Default baseline scenario, hidden regression-only fixture
+
 **3D scenario definition**:
 A normalized in-memory description of one yaw-only 3D scenario: simulation settings, 3D reference path, 3D robot volume, authoritative obstacle geometry, MID-360-like sensor settings, and controller point budget.
 _Avoid_: Raw YAML mapping, partially-normalized runner config

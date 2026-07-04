@@ -2,7 +2,7 @@
 
 # Make the 3D reference window distance-based
 
-Status: ready-for-agent
+Status: implemented
 Category: enhancement
 
 ## Parent
@@ -41,12 +41,12 @@ The controller-facing reference window should remain fixed-size for the MPPI con
 
 **Acceptance criteria:**
 
-- [ ] For `narrow_gap_t_volume_3d`, frame 0's exported controller reference window spans a configurable physical distance that clearly extends beyond the T-shaped 3D robot volume.
-- [ ] The controller still receives a fixed-size plan compatible with `time_steps`.
-- [ ] Dense reference paths no longer produce visually tiny controller reference windows.
-- [ ] Replay data and/or viewer labeling distinguishes the controller reference window from `optimal_trajectory`.
-- [ ] Tests cover a dense reference path where the selected reference window spans distance rather than just `time_steps` adjacent raw points.
-- [ ] Existing replay viewer layers for reference path, executed path, optimal trajectory, and rollouts still work.
+- [x] For `narrow_gap_t_volume_3d`, frame 0's exported controller reference window spans a configurable physical distance that clearly extends beyond the T-shaped 3D robot volume.
+- [x] The controller still receives a fixed-size plan compatible with `time_steps`.
+- [x] Dense reference paths no longer produce visually tiny controller reference windows.
+- [x] Replay data and/or viewer labeling distinguishes the controller reference window from `optimal_trajectory`.
+- [x] Tests cover a dense reference path where the selected reference window spans distance rather than just `time_steps` adjacent raw points.
+- [x] Existing replay viewer layers for reference path, executed path, optimal trajectory, and rollouts still work.
 
 **Out of scope:**
 

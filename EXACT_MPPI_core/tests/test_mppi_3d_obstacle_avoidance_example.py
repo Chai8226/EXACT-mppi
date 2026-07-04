@@ -38,6 +38,21 @@ def test_core_only_3d_obstacle_avoidance_example_reaches_goal_headlessly():
     )
 
 
+def test_3d_example_cli_defaults_to_render_and_accepts_2d_style_aliases():
+    example = _load_example_module()
+    parser = example.build_arg_parser()
+
+    defaults = parser.parse_args([])
+    aliased = parser.parse_args(["--no-render", "-a", "--show_rollouts"])
+
+    assert defaults.render is True
+    assert defaults.save_gif is False
+    assert defaults.show_rollouts is False
+    assert aliased.render is False
+    assert aliased.save_gif is True
+    assert aliased.show_rollouts is True
+
+
 def test_3d_example_can_save_visualization_gif_headlessly(tmp_path, monkeypatch):
     monkeypatch.setenv("MPLCONFIGDIR", str(tmp_path / "matplotlib"))
     example = _load_example_module()

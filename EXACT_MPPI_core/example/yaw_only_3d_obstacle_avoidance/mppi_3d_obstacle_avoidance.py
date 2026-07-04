@@ -1,13 +1,81 @@
 import argparse
+import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+
+def _has_nvidia_device() -> bool:
+    nvidia_dev = Path("/dev")
+    if not nvidia_dev.exists():
+        return False
+    return any(nvidia_dev.glob("nvidia[0-9]*")) or (nvidia_dev / "nvidiactl").exists()
+
+
+def _wants_cuda_jax() -> bool:
+    platform_setting = (
+        os.environ.get("JAX_PLATFORMS")
+        or os.environ.get("JAX_PLATFORM_NAME")
+        or ""
+    ).lower()
+    return platform_setting not in {"cpu", "tpu"} and _has_nvidia_device()
+
+
+def _venv_nvidia_lib_dirs() -> list[str]:
+    python_version = f"python{sys.version_info.major}.{sys.version_info.minor}"
+    nvidia_root = Path(sys.prefix) / "lib" / python_version / "site-packages" / "nvidia"
+    if not nvidia_root.exists():
+        return []
+    return [
+        str(path)
+        for path in sorted(nvidia_root.glob("*/lib"))
+        if path.is_dir()
+    ]
+
+
+def _reexec_with_venv_cuda_libs_if_needed() -> None:
+    if not _wants_cuda_jax() or os.environ.get("EXACT_MPPI_CUDA_LIBS_READY") == "1":
+        return
+
+    lib_dirs = _venv_nvidia_lib_dirs()
+    if not lib_dirs:
+        return
+
+    current_paths = [
+        path for path in os.environ.get("LD_LIBRARY_PATH", "").split(":") if path
+    ]
+    missing_dirs = [path for path in lib_dirs if path not in current_paths]
+    if not missing_dirs:
+        return
+
+    os.environ["LD_LIBRARY_PATH"] = ":".join(missing_dirs + current_paths)
+    os.environ["EXACT_MPPI_CUDA_LIBS_READY"] = "1"
+    os.execv(sys.executable, [sys.executable, *sys.argv])
+
+
+os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+if "JAX_PLATFORMS" not in os.environ and not _has_nvidia_device():
+    os.environ["JAX_PLATFORMS"] = "cpu"
+    print("No NVIDIA GPU detected. Using CPU backend for JAX.")
+if __name__ == "__main__":
+    _reexec_with_venv_cuda_libs_if_needed()
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
 from exact_mppi.mppi_3d import BoxUnionVolume3D, MPPIController3D
+
+
+def report_jax_device() -> None:
+    devices = jax.devices()
+    summary = ", ".join(
+        f"{device.platform}:{getattr(device, 'device_kind', str(device))}"
+        for device in devices
+    )
+    print(f"JAX backend: {jax.default_backend()}")
+    print(f"JAX devices: {summary}")
 
 
 @dataclass(frozen=True)
@@ -17,6 +85,89 @@ class VisualizationFrame3D:
     local_plan_global: np.ndarray
     optimal_trajectory_global: Optional[np.ndarray]
     sampled_rollouts_global: Optional[np.ndarray]
+
+
+class VisualizationSession3D:
+    def __init__(
+        self,
+        result_context: "ExampleResult3D",
+        robot_volume_config: list[dict],
+        *,
+        render: bool,
+        save_gif: bool,
+        show_rollouts: bool,
+    ):
+        import matplotlib
+
+        if not render:
+            matplotlib.use("Agg", force=True)
+
+        import matplotlib.pyplot as plt
+        from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+
+        self._plt = plt
+        self._poly_collection_cls = Poly3DCollection
+        self._result_context = result_context
+        self._robot_volume_config = robot_volume_config
+        self._render = bool(render)
+        self._save_gif = bool(save_gif)
+        self._show_rollouts = bool(show_rollouts)
+        self._gif_images = []
+        self._fig = plt.figure(figsize=(8, 6))
+        self._ax = self._fig.add_subplot(111, projection="3d")
+        if self._render:
+            plt.ion()
+            self._fig.show()
+
+    def draw_frame(self, frame: VisualizationFrame3D) -> None:
+        _draw_visualization_frame(
+            self._ax,
+            frame,
+            self._result_context,
+            self._robot_volume_config,
+            self._poly_collection_cls,
+            show_rollouts=self._show_rollouts,
+        )
+        self._fig.canvas.draw()
+        if self._save_gif:
+            self._capture_gif_image()
+        if self._render:
+            self._plt.pause(0.001)
+
+    def finish(
+        self,
+        *,
+        gif_path: str | Path | None,
+        frame_duration_ms: int = 100,
+    ) -> None:
+        if self._save_gif and self._gif_images:
+            output_path = (
+                Path(gif_path)
+                if gif_path is not None
+                else Path("yaw_only_3d_mppi.gif")
+            )
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            self._gif_images[0].save(
+                output_path,
+                save_all=True,
+                append_images=self._gif_images[1:],
+                duration=frame_duration_ms,
+                loop=0,
+            )
+
+        if self._render:
+            self._plt.ioff()
+            self._plt.show(block=True)
+        else:
+            self._plt.close(self._fig)
+
+    def _capture_gif_image(self) -> None:
+        from PIL import Image
+
+        width, height = self._fig.canvas.get_width_height()
+        image = np.asarray(self._fig.canvas.buffer_rgba(), dtype=np.uint8)
+        image = image.reshape((height, width, 4))[..., :3]
+        self._gif_images.append(Image.fromarray(image.copy()))
 
 
 @dataclass(frozen=True)
@@ -240,58 +391,17 @@ def _render_3d_obstacle_avoidance_visualization(
     if not result.visualization_frames:
         return
 
-    import matplotlib
-
-    if not render:
-        matplotlib.use("Agg", force=True)
-
-    import matplotlib.pyplot as plt
-    from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-
+    session = VisualizationSession3D(
+        result,
+        robot_volume_config,
+        render=render,
+        save_gif=save_gif,
+        show_rollouts=show_rollouts,
+    )
     frames = result.visualization_frames
-    fig = plt.figure(figsize=(8, 6))
-    ax = fig.add_subplot(111, projection="3d")
-    gif_images = []
-
     for frame in frames:
-        _draw_visualization_frame(
-            ax,
-            frame,
-            result,
-            robot_volume_config,
-            Poly3DCollection,
-            show_rollouts=show_rollouts,
-        )
-        fig.canvas.draw()
-
-        if save_gif:
-            from PIL import Image
-
-            width, height = fig.canvas.get_width_height()
-            image = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-            image = image.reshape((height, width, 3))
-            gif_images.append(Image.fromarray(image.copy()))
-
-        if render:
-            plt.pause(0.001)
-
-    if save_gif and gif_images:
-        output_path = (
-            Path(gif_path) if gif_path is not None else Path("yaw_only_3d_mppi.gif")
-        )
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        gif_images[0].save(
-            output_path,
-            save_all=True,
-            append_images=gif_images[1:],
-            duration=frame_duration_ms,
-            loop=0,
-        )
-
-    if render:
-        plt.show(block=True)
-    else:
-        plt.close(fig)
+        session.draw_frame(frame)
+    session.finish(gif_path=gif_path, frame_duration_ms=frame_duration_ms)
 
 
 def _draw_visualization_frame(
@@ -521,6 +631,25 @@ def run_3d_obstacle_avoidance_example(
     command_history = []
     visualization_frames = []
     min_clearance = minimum_state_clearance(robot_volume, obstacle_points, state)
+    visualization_session = None
+    if capture_visualization:
+        visualization_context = ExampleResult3D(
+            reached_goal=False,
+            collided=False,
+            min_sdf_clearance=0.0,
+            final_state=state.copy(),
+            state_history=np.asarray(state_history, dtype=np.float32),
+            command_history=np.zeros((0, 4), dtype=np.float32),
+            global_reference_path=reference_path,
+            global_obstacle_points=obstacle_points,
+        )
+        visualization_session = VisualizationSession3D(
+            visualization_context,
+            robot_volume_config,
+            render=render,
+            save_gif=save_gif,
+            show_rollouts=show_rollouts,
+        )
 
     for step in range(max_steps):
         local_plan = select_local_plan(reference_path, state, time_steps)
@@ -543,15 +672,16 @@ def run_3d_obstacle_avoidance_example(
         command = np.asarray(command, dtype=np.float32)
 
         if capture_visualization and step % gif_frame_stride == 0:
-            visualization_frames.append(
-                _capture_visualization_frame(
-                    state,
-                    state_history,
-                    local_plan,
-                    controller,
-                    show_rollouts,
-                )
+            frame = _capture_visualization_frame(
+                state,
+                state_history,
+                local_plan,
+                controller,
+                show_rollouts,
             )
+            visualization_frames.append(frame)
+            if visualization_session is not None:
+                visualization_session.draw_frame(frame)
 
         state = integrate_yaw_only_3d_state(state, command, model_dt)
         speed = command
@@ -568,14 +698,16 @@ def run_3d_obstacle_avoidance_example(
     reached_goal = final_distance <= goal_tolerance
     collided = min_clearance < clearance_margin
     if capture_visualization:
-        visualization_frames.append(
-            _capture_final_visualization_frame(
-                state,
-                state_history,
-                reference_path,
-                time_steps,
-            )
+        frame = _capture_final_visualization_frame(
+            state,
+            state_history,
+            reference_path,
+            time_steps,
         )
+        visualization_frames.append(frame)
+        if visualization_session is not None:
+            visualization_session.draw_frame(frame)
+            visualization_session.finish(gif_path=gif_path)
     result = ExampleResult3D(
         reached_goal=reached_goal,
         collided=collided,
@@ -587,19 +719,10 @@ def run_3d_obstacle_avoidance_example(
         global_obstacle_points=obstacle_points,
         visualization_frames=tuple(visualization_frames),
     )
-    if capture_visualization:
-        _render_3d_obstacle_avoidance_visualization(
-            result,
-            robot_volume_config,
-            render=render,
-            save_gif=save_gif,
-            gif_path=gif_path,
-            show_rollouts=show_rollouts,
-        )
     return result
 
 
-def main() -> int:
+def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run a Core-only yaw-only 3D MPPI obstacle-avoidance example."
     )
@@ -608,22 +731,42 @@ def main() -> int:
     parser.add_argument("--clearance-margin", type=float, default=0.04)
     parser.add_argument(
         "--render",
+        dest="render",
         action="store_true",
+        default=True,
         help="Display matplotlib 3D visualization.",
     )
     parser.add_argument(
+        "--no-render",
+        dest="render",
+        action="store_false",
+        help="Run without opening a matplotlib window.",
+    )
+    parser.add_argument(
+        "-a",
+        "--save_animation",
         "--save-gif",
+        dest="save_gif",
         action="store_true",
         help="Save matplotlib 3D visualization as a GIF.",
     )
     parser.add_argument("--gif-path", type=Path, default=Path("yaw_only_3d_mppi.gif"))
     parser.add_argument(
+        "--show_rollouts",
         "--show-rollouts",
+        dest="show_rollouts",
         action="store_true",
         help="Visualize sampled MPPI rollouts.",
     )
     parser.add_argument("--gif-frame-stride", type=int, default=1)
+    return parser
+
+
+def main() -> int:
+    parser = build_arg_parser()
     args = parser.parse_args()
+
+    report_jax_device()
 
     result = run_3d_obstacle_avoidance_example(
         max_steps=args.max_steps,
